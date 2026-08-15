@@ -1,0 +1,26 @@
+# ===== 发布产物（dist 为唯一交付目录，由 publish-single.ps1 生成） =====
+dist/
+
+# ===== 构建产物（编译输出） =====
+src/bin/
+src/obj/
+
+# ===== 本地工具链（.NET SDK + NuGet 本地源，仅开发机需要） =====
+.tools/
+
+# ===== 验证/临时文件 =====
+.test/
+*.log
+
+# ===== IDE / 编辑器 =====
+.vs/
+*.user
+*.suo
+.idea/
+*.swp
+
+# ===== 系统 =====
+Thumbs.db
+Desktop.ini
+
+方案.md

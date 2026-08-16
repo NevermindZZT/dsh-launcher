@@ -16,11 +16,11 @@ public sealed class SettingsForm : ThemedForm
     // 连接模式
     private readonly ThemedRadioButton _rbLocalMode = new() { Text = "本地" };
     private readonly ThemedRadioButton _rbSshMode = new() { Text = "SSH 远程" };
-    private readonly ComboBox _cmbSsh = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, Height = 34 };
-    private readonly RoundedButton _btnSshAdd = new() { Text = "新增", Width = 64, Height = 34 };
-    private readonly RoundedButton _btnSshEdit = new() { Text = "编辑", Width = 64, Height = 34 };
-    private readonly RoundedButton _btnSshDel = new() { Text = "删除", Width = 64, Height = 34 };
-    private readonly RoundedButton _btnSshTest = new() { Text = "测试连接", Width = 100, Height = 34 };
+    private readonly ComboBox _cmbSsh = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, Height = 40 };
+    private readonly RoundedButton _btnSshAdd = new() { Text = "新增", Width = 72, Height = 40 };
+    private readonly RoundedButton _btnSshEdit = new() { Text = "编辑", Width = 72, Height = 40 };
+    private readonly RoundedButton _btnSshDel = new() { Text = "删除", Width = 72, Height = 40 };
+    private readonly RoundedButton _btnSshTest = new() { Text = "测试连接", Width = 108, Height = 40 };
     private readonly Label _sshStatus = new() { AutoSize = true, Tag = "muted" };
     private readonly RoundedButton _btnSave = new() { Text = "保存", DialogResult = DialogResult.OK, Width = 96, Height = 36 };
     private readonly RoundedButton _btnCancel = new() { Text = "取消", DialogResult = DialogResult.Cancel, Width = 96, Height = 36 };
@@ -29,9 +29,9 @@ public sealed class SettingsForm : ThemedForm
     {
         _settings = settings;
         Text = "设置";
-        Width = 780;
-        Height = 720;
-        MinimumSize = new Size(700, 640);
+        Width = 840;
+        Height = 820;
+        MinimumSize = new Size(740, 700);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -40,7 +40,7 @@ public sealed class SettingsForm : ThemedForm
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            Padding = new Padding(32, 30, 32, 14),
+            Padding = new Padding(44, 40, 44, 20),
             AutoSize = false,
             RowCount = 9,
         };
@@ -95,11 +95,7 @@ public sealed class SettingsForm : ThemedForm
         panel.Controls.Add(MkLabel("DSH_HOME"), 0, row);
         panel.Controls.Add(_dshHome, 1, row);
         row++;
-        panel.Controls.Add(MkLabel("版本"), 0, row);
-        panel.Controls.Add(MkLabel(VersionHelper.Current), 1, row);
-        row++;
 
-        // 连接模式
         // SSH 连接管理（多连接，本地连接始终存在）
         panel.Controls.Add(MkLabel("SSH 连接"), 0, row);
         var sshWrap = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
@@ -119,6 +115,10 @@ public sealed class SettingsForm : ThemedForm
         // 测试状态
         panel.Controls.Add(MkLabel(""), 0, row);
         panel.Controls.Add(_sshStatus, 1, row);
+        row++;
+        // 版本（最后一项）
+        panel.Controls.Add(MkLabel("版本"), 0, row);
+        panel.Controls.Add(MkLabel(VersionHelper.Current), 1, row);
         row++;
 
         var btnWrap = new FlowLayoutPanel
@@ -140,7 +140,7 @@ public sealed class SettingsForm : ThemedForm
 
     private static Label MkLabel(string text, bool muted = false)
     {
-        return new Label { Text = text, AutoSize = true, Margin = new Padding(0, 12, 16, 0), Tag = muted ? "muted" : null };
+        return new Label { Text = text, AutoSize = true, Margin = new Padding(0, 11, 16, 0), Tag = muted ? "muted" : null };
     }
 
     protected override void ApplyPalette(ThemeHelper.Palette p)

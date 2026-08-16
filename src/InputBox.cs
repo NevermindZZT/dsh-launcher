@@ -21,9 +21,10 @@ public sealed class InputBox : Panel
         set { _cornerRadius = value; Invalidate(); }
     }
 
-    public InputBox(int height = 34, string? placeholder = null)
+    public InputBox(int height = 40, string? placeholder = null)
     {
         Height = height;
+        _cornerRadius = 8;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
             ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
         Inner = new TextBox { BorderStyle = BorderStyle.None };

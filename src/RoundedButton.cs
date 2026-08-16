@@ -23,7 +23,8 @@ public sealed class RoundedButton : Button
         // 宽度按文字自适应（GrowOnly：显式设置的宽度只增不减），文字完整显示不使用省略号
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowOnly;
-        MinimumSize = new Size(64, 34);
+        MinimumSize = new Size(72, 40);
+        CornerRadius = 8;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
             ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
         MouseEnter += (_, _) => { _hovered = true; Invalidate(); };

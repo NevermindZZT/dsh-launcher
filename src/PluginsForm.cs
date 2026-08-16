@@ -11,7 +11,8 @@ public sealed class PluginsForm : ThemedForm
     private readonly IDshConnection _connection;
     private readonly PluginManager _manager;
     private readonly Func<Task> _restartHost;
-    private readonly ListView _list = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, HideSelection = false, BorderStyle = BorderStyle.None, OwnerDraw = true };
+    // 自绘多列列表（替代 ListView —— ListView OwnerDraw 焦点/选中交互不可控导致焦点乱跳）
+    private readonly ThemedListView _list = new() { Dock = DockStyle.Fill };
     private readonly InputBox _pkg = new(36, "插件包名，如 dshmarket") { Width = 260 };
     private readonly RoundedButton _btnInstall = new() { Text = "安装", Width = 84, Height = 36 };
     private readonly RoundedButton _btnRemove = new() { Text = "卸载选中", Width = 96, Height = 36 };
@@ -45,11 +46,7 @@ public sealed class PluginsForm : ThemedForm
         Height = 720;
         MinimumSize = new Size(860, 560);
 
-        _list.Columns.Add("插件", 360);
-        _list.Columns.Add("类型", 130);
-        _list.Columns.Add("规格", 260);
-        _list.Resize += (_, _) => ResizeColumns();
-        ThemeHelper.SetupListView(_list, ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode()));
+        _list.SetColumns(("插件", 0.5f), ("类型", 0.16f), ("规格", 0.34f));
 
         var top = new FlowLayoutPanel
         {
@@ -81,22 +78,12 @@ public sealed class PluginsForm : ThemedForm
     {
         ApplyPaletteTree(this, p);
         _status.ForeColor = p.MutedText;
-        ThemeHelper.SetupListView(_list, p);
-    }
-
-    /// <summary>ListView 列宽随窗口自适应（比例分配，防止内容溢出被裁剪）。</summary>
-    private void ResizeColumns()
-    {
-        if (_list.Columns.Count < 3 || _list.ClientSize.Width <= 0) return;
-        var total = _list.ClientSize.Width;
-        var w0 = (int)(total * 0.48);
-        var w1 = (int)(total * 0.16);
-        var w2 = total - w0 - w1;
-        _list.BeginUpdate();
-        _list.Columns[0].Width = Math.Max(140, w0);
-        _list.Columns[1].Width = Math.Max(90, w1);
-        _list.Columns[2].Width = Math.Max(120, w2);
-        _list.EndUpdate();
+        _list.Surface = p.Surface;
+        _list.SurfaceAlt = p.SurfaceAlt;
+        _list.Text = p.Text;
+        _list.Accent = p.Accent;
+        _list.Scrollbar = p.SurfaceAlt;
+        _list.Invalidate();
     }
 
     /// <summary>压缩路径显示：保留前 2 段与后 2 段，中间用 … 省略。</summary>
@@ -115,36 +102,24 @@ public sealed class PluginsForm : ThemedForm
         if (_connection.IsRemote)
         {
             // SSH 远端：执行 dsh plugin list，输出到下方输出区
-            _list.BeginUpdate();
-            _list.Items.Clear();
-            _list.EndUpdate();
+            _list.SetRows(Array.Empty<ListViewRow>());
             _status.Text = "远端模式 · 插件列表见下方输出（dsh plugin list）";
             AppendOutput($">>> dsh plugin --profile web list");
             _ = _connection.RunPluginAsync(new[] { "list", "--depth", "0" }, AppendOutput);
             return;
         }
-        _list.BeginUpdate();
-        _list.Items.Clear();
-        foreach (var pl in _manager.ListPlugins())
-        {
-            var kind = (pl.IsBundle ? "bundle" : "依赖") + (pl.IsTemplate ? "·模板" : "");
-            var item = new ListViewItem(pl.Package) { Tag = pl.Package };
-            item.SubItems.Add(kind);
-            item.SubItems.Add(pl.Spec ?? "");
-            _list.Items.Add(item);
-        }
-        _list.EndUpdate();
-        ResizeColumns();
+        _list.SetRows(_manager.ListPlugins().Select(pl => new ListViewRow(
+            new[] { pl.Package, (pl.IsBundle ? "bundle" : "依赖") + (pl.IsTemplate ? "·模板" : ""), pl.Spec ?? "" },
+            pl.Package)));
         // 路径压缩显示（完整路径放 ToolTip，避免长路径被裁剪）
         var shortProfile = CompactPath(_manager.ProfileDir);
-        _status.Text = $"已装 {_list.Items.Count} 个插件 · profile: {shortProfile}";
+        _status.Text = $"已装 {_list.Rows.Count} 个插件 · profile: {shortProfile}";
         _statusTip.SetToolTip(_status, $"profile: {_manager.ProfileDir}");
     }
 
     private string? SelectedPackage()
     {
-        var sel = _list.SelectedItems.Cast<ListViewItem>().FirstOrDefault();
-        return sel?.Tag as string;
+        return _list.SelectedRow?.Tag as string;
     }
 
     private async Task RunAsync(string action, string? pkg)

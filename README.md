@@ -10,7 +10,7 @@
 
 ## 项目背景
 
-[DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh）是 DeepSeek 的 CLI 驱动 AI 开发环境，官方使用方式是「终端启动 + 浏览器访问」两步流程：
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）是 DeepSeek 的 CLI 驱动 AI 开发环境，官方使用方式是「终端启动 + 浏览器访问」两步流程：
 
 - 终端执行 `dsh web` 启动服务，再手动打开浏览器；
 - 插件安装 / 卸载 / 更新、日志查看、服务重启全部依赖终端；

@@ -14,12 +14,12 @@ public static class RemoteDshManager
     private const string NohupDir = "~/.dsh-launcher";
 
     /// <summary>在远端启动 dsh（systemd 优先，nohup 降级），返回使用的方式。调用方随后等待本地转发端口就绪。</summary>
-    public static string StartRemote(SshRunner runner, SshConnectionConfig cfg, Action<string> log)
+    public static string StartRemote(SshRunner runner, SshConnectionConfig cfg, int remotePort, Action<string> log)
     {
         // 0) 远端 dsh 是否已在运行（防多实例并发启动：隧道探测慢时误判未运行会重复启动 → 端口/配置冲突）
-        if (IsRemoteReady(runner, cfg.RemotePort))
+        if (IsRemoteReady(runner, remotePort))
         {
-            log($"远端 dsh 已在运行 (端口 {cfg.RemotePort})，直接复用");
+            log($"远端 dsh 已在运行 (端口 {remotePort})，直接复用");
             return "ready";
         }
 
@@ -46,15 +46,15 @@ public static class RemoteDshManager
         log($"远端 dsh 路径: {node} {dshBin}");
 
         // 分级：systemd（Linux）→ launchctl（macOS）→ nohup（兜底）
-        if (TrySystemd(runner, cfg, node, dshBin, log)) return "systemd";
-        if (TryLaunchctl(runner, cfg, node, dshBin, log)) return "launchctl";
+        if (TrySystemd(runner, cfg, remotePort, node, dshBin, log)) return "systemd";
+        if (TryLaunchctl(runner, cfg, remotePort, node, dshBin, log)) return "launchctl";
         // nohup 前再确认（systemd/launchctl 可能刚启动成功但探测未及，避免多实例）
-        if (IsRemoteReady(runner, cfg.RemotePort))
+        if (IsRemoteReady(runner, remotePort))
         {
             log("远端 dsh 已就绪，跳过 nohup");
             return "ready";
         }
-        StartNohup(runner, cfg, node, dshBin, log);
+        StartNohup(runner, cfg, remotePort, node, dshBin, log);
         return "nohup";
     }
 
@@ -70,7 +70,7 @@ public static class RemoteDshManager
     }
 
     /// <summary>尝试 launchctl（macOS）启动；非 Darwin 或失败返回 false。</summary>
-    private static bool TryLaunchctl(SshRunner runner, SshConnectionConfig cfg, string node, string dshBin, Action<string> log)
+    private static bool TryLaunchctl(SshRunner runner, SshConnectionConfig cfg, int remotePort, string node, string dshBin, Action<string> log)
     {
         var uname = runner.Exec("uname -s 2>/dev/null || echo unknown").Trim();
         if (uname != "Darwin") return false;
@@ -90,7 +90,7 @@ public static class RemoteDshManager
         <string>{dshBin}</string>
         <string>web</string>
         <string>--host</string><string>127.0.0.1</string>
-        <string>--port</string><string>{cfg.RemotePort}</string>
+        <string>--port</string><string>{remotePort}</string>
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -115,7 +115,7 @@ public static class RemoteDshManager
         return false;
     }
 
-    private static bool TrySystemd(SshRunner runner, SshConnectionConfig cfg, string node, string dshBin, Action<string> log)
+    private static bool TrySystemd(SshRunner runner, SshConnectionConfig cfg, int remotePort, string node, string dshBin, Action<string> log)
     {
         var systemdOk = runner.Exec("systemctl --user show-environment >/dev/null 2>&1 && echo ok || echo no").Trim() == "ok";
         if (!systemdOk) return false;
@@ -127,7 +127,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={node} {dshBin} web --host 127.0.0.1 --port {cfg.RemotePort}
+ExecStart={node} {dshBin} web --host 127.0.0.1 --port {remotePort}
 Restart=on-failure
 RestartSec=3
 
@@ -150,9 +150,9 @@ WantedBy=default.target";
         return false;
     }
 
-    private static void StartNohup(SshRunner runner, SshConnectionConfig cfg, string node, string dshBin, Action<string> log)
+    private static void StartNohup(SshRunner runner, SshConnectionConfig cfg, int remotePort, string node, string dshBin, Action<string> log)
     {
-        var cmd = $"mkdir -p {NohupDir} && nohup {node} {dshBin} web --host 127.0.0.1 --port {cfg.RemotePort} > {NohupDir}/dsh-web.log 2>&1 & echo $! > {NohupDir}/dsh.pid && echo nohup-started";
+        var cmd = $"mkdir -p {NohupDir} && nohup {node} {dshBin} web --host 127.0.0.1 --port {remotePort} > {NohupDir}/dsh-web.log 2>&1 & echo $! > {NohupDir}/dsh.pid && echo nohup-started";
         var result = runner.Exec(cmd);
         if (!result.Contains("nohup-started"))
         {

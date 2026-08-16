@@ -16,6 +16,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
     private Process? _tunnel;
     private string? _localUrl;
     private int _localPort;
+    private int _remotePort;
     private bool _stopping;
     private bool _disposed;
     // 操作互斥锁：防止并发 Start/Restart（重复按键或重复触发导致多隧道/多启动）
@@ -66,6 +67,53 @@ public sealed class SshConnection : IDshConnection, IDisposable
         return port;
     }
 
+
+    /// <summary>解析远端 dsh 端口：优先复用已有实例（同一用户不启动多个），其次配置指定，最后随机空闲。</summary>
+    private int ResolveRemotePort()
+    {
+        // 已有 dsh 实例？（同一用户复用，避免多实例）
+        var existing = FindExistingDshPort();
+        if (existing > 0) { Log($"检测到已有 dsh 实例 (端口 {existing})，直接复用"); return existing; }
+        // 配置指定端口
+        if (_config.RemotePort > 0) return _config.RemotePort;
+        // 随机空闲端口（多用户服务器避免冲突）
+        return FindRemoteFreePort();
+    }
+
+    /// <summary>探测远端是否已有 dsh 实例在运行（端口记录 / systemd service / 监听进程），返回其端口（0 = 无）。</summary>
+    private int FindExistingDshPort()
+    {
+        try
+        {
+            // 1) 端口记录文件 + 实例在跑？
+            var recorded = _runner.Exec("cat ~/.dsh-launcher/dsh.port 2>/dev/null || echo 0", 20).Trim();
+            if (int.TryParse(recorded, out var rp) && rp > 0)
+            {
+                var code = _runner.Exec($"curl -s -o /dev/null -w '%{{http_code}}' --max-time 2 http://127.0.0.1:{rp}/ || echo 000", 20).Trim();
+                if (code == "200") return rp;
+            }
+            // 2) systemd service active？读 ExecStart 端口
+            var active = _runner.Exec("systemctl --user is-active dsh-launcher 2>/dev/null || echo inactive", 20).Trim();
+            if (active == "active")
+            {
+                var sp = _runner.Exec("grep -o '--port [0-9]*' ~/.config/systemd/user/dsh-launcher.service 2>/dev/null | grep -o '[0-9]*' || echo 0", 20).Trim();
+                if (int.TryParse(sp, out var sp2) && sp2 > 0) return sp2;
+            }
+            // 3) 监听进程兜底（node dsh web）
+            var listen = _runner.Exec("ss -tlnp 2>/dev/null | grep 'bin.js web' | grep LISTEN | awk -F: '{print $(NF-1)}' | tail -1 || echo 0", 20).Trim();
+            if (int.TryParse(listen, out var lp) && lp > 0) return lp;
+        }
+        catch { }
+        return 0;
+    }
+
+    /// <summary>远端找一个空闲端口（node 实现，dsh 依赖 node）。</summary>
+    private int FindRemoteFreePort()
+    {
+        var r = _runner.Exec("node -e \"const s=require('net').createServer();s.listen(0,()=>{console.log(s.address().port);s.close()})\" 2>/dev/null || echo 0", 30).Trim();
+        var port = r.Trim().Split('\n')[0].Trim();
+        return int.TryParse(port, out var p) && p > 0 ? p : 3080;
+    }
     /// <summary>本地探测转发端口是否已是可用的 dsh（HTTP 200 + dsh 标记）。</summary>
     private static async Task<bool> IsLocalReadyAsync(int port)
     {
@@ -103,16 +151,21 @@ public sealed class SshConnection : IDshConnection, IDisposable
         }
         Log($"SSH 已连接 {_config.Host}:{_config.Port}");
 
-        // 2) 选本地端口并启动隧道：0 = 自动分配空闲端口；指定端口被占用也自动换（避免冲突）
+        // 2) 远端端口解析：已有 dsh 实例（同一用户复用，不启动多个）→ 指定端口 → 随机空闲端口
+        var remotePort = ResolveRemotePort();
+        Log($"远端端口: {remotePort}{(remotePort == _config.RemotePort && _config.RemotePort > 0 ? "（配置指定）" : remotePort == FindExistingDshPort() ? "（复用已有实例）" : "（自动分配）")}");
+
+        // 3) 选本地端口并启动隧道：0 = 自动分配空闲端口；指定端口被占用也自动换（避免冲突）
         var localPort = _config.LocalPort > 0 ? _config.LocalPort : FindFreePort();
         if (!IsPortFree(localPort)) localPort = FindFreePort();
         _localPort = localPort;
-        _tunnel = _runner.StartTunnel(localPort, _config.RemotePort);
+        _remotePort = remotePort;
+        _tunnel = _runner.StartTunnel(localPort, remotePort);
         _tunnel.EnableRaisingEvents = true;
         _tunnel.Exited += (_, _) => _ = OnTunnelExitedAsync();
-        Log($"隧道已建立: 127.0.0.1:{localPort} <- 远端 127.0.0.1:{_config.RemotePort} (pid {_tunnel.Id})");
+        Log($"隧道已建立: 127.0.0.1:{localPort} <- 远端 127.0.0.1:{remotePort} (pid {_tunnel.Id})");
 
-        // 3) 等待本地转发端口就绪；未就绪则启动远端 dsh
+        // 4) 等待本地转发端口就绪；未就绪则启动远端 dsh（用解析出的 remotePort）
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (DateTime.UtcNow < deadline && !await IsLocalReadyAsync(localPort))
         {
@@ -124,8 +177,10 @@ public sealed class SshConnection : IDshConnection, IDisposable
             Log("远端 dsh 未运行，正在启动…");
             try
             {
-                var method = await Task.Run(() => RemoteDshManager.StartRemote(_runner, _config, Log), ct);
+                var method = await Task.Run(() => RemoteDshManager.StartRemote(_runner, _config, remotePort, Log), ct);
                 Log($"远端启动方式: {method}");
+                // 记录实际端口（供下次复用同一实例）
+                _runner.Exec($"mkdir -p ~/.dsh-launcher && echo {remotePort} > ~/.dsh-launcher/dsh.port", 20);
             }
             catch (Exception ex)
             {
@@ -170,7 +225,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
             if (_stopping || _disposed) return;
             try
             {
-                _tunnel = _runner.StartTunnel(_localPort, _config.RemotePort);
+                _tunnel = _runner.StartTunnel(_localPort, _remotePort);
                 _tunnel.EnableRaisingEvents = true;
                 _tunnel.Exited += (_, _) => _ = OnTunnelExitedAsync();
                 if (await IsLocalReadyAsync(_localPort))

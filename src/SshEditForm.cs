@@ -96,7 +96,11 @@ public sealed class SshEditForm : ThemedForm
         lpWrap.Controls.Add(_localPort);
         lpWrap.Controls.Add(MkLabel("0 = 自动分配（推荐）"));
         panel.Controls.Add(lpWrap, 1, row); row++;
-        panel.Controls.Add(MkLabel("远端端口"), 0, row); panel.Controls.Add(_remotePort, 1, row); row++;
+        panel.Controls.Add(MkLabel("远端端口"), 0, row);
+        var rpWrap = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+        rpWrap.Controls.Add(_remotePort);
+        rpWrap.Controls.Add(MkLabel("0 = 自动（多用户服务器建议）"));
+        panel.Controls.Add(rpWrap, 1, row); row++;
         panel.Controls.Add(MkLabel("生命周期"), 0, row); panel.Controls.Add(_chkStopOnClose, 1, row); row++;
         panel.Controls.Add(MkLabel("自动连接"), 0, row); panel.Controls.Add(_chkAutoConnect, 1, row); row++;
 
@@ -132,7 +136,7 @@ public sealed class SshEditForm : ThemedForm
         {
             _port.Inner.Text = "22";
             _localPort.Inner.Text = "0";
-            _remotePort.Inner.Text = "3080";
+            _remotePort.Inner.Text = "0";
             _rbKey.Checked = true;
             _chkStopOnClose.Checked = true;
             _chkAutoConnect.Checked = true;

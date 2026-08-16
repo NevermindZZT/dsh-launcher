@@ -249,6 +249,48 @@ public sealed class SshConnection : IDshConnection, IDisposable
     }
 
     /// <summary>把选中的远端路径写入 dsh 工作区存储（~/.dsh/storages/workspace.json），刷新页面即可见。</summary>
+
+    /// <summary>
+    /// 通过 dsh RPC（HTTP POST /api/workspace.create）在远端创建 dsh 工作区 —— 走后端正常流程，无需重启。
+    /// 协议（读 dsh-client-connection 源码）：{ type: client-request, rpcId, method: workspace.create, payload: { path } }
+    /// 响应 { type: server-response, rpcId, result: { ok, value: { workspace, created } } }；loopback 信任免认证。
+    /// </summary>
+    public async Task<(bool ok, string? error)> CreateWorkspaceRpcAsync(string path, Action<string>? onOutput = null, CancellationToken ct = default)
+    {
+        if (_localUrl == null) return (false, "SSH 未连接");
+        try
+        {
+            var rpcId = Guid.NewGuid().ToString();
+            var body = new System.Text.Json.Nodes.JsonObject
+            {
+                ["type"] = "client-request",
+                ["rpcId"] = rpcId,
+                ["method"] = "workspace.create",
+                ["payload"] = new System.Text.Json.Nodes.JsonObject { ["path"] = path },
+            };
+            onOutput?.Invoke($"RPC workspace.create → {path}");
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            using var req = new HttpRequestMessage(HttpMethod.Post, _localUrl + "/api/workspace.create");
+            req.Content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+            using var resp = await client.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode) return (false, $"HTTP {(int)resp.StatusCode}");
+            var json = System.Text.Json.Nodes.JsonNode.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var respId = json?["rpcId"]?.GetValue<string>();
+            if (respId != rpcId) return (false, $"rpcId 不匹配（{respId}）");
+            var ok = json?["result"]?["ok"]?.GetValue<bool>() ?? false;
+            if (!ok)
+            {
+                var err = json?["result"]?["error"];
+                return (false, err?.ToJsonString() ?? "RPC 返回失败");
+            }
+            onOutput?.Invoke("工作区已通过 RPC 创建");
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
     public async Task<string> AddRemoteWorkspaceAsync(string path, Action<string>? onOutput = null, CancellationToken ct = default)
     {
         if (_tunnel == null) throw new InvalidOperationException("SSH 未连接");

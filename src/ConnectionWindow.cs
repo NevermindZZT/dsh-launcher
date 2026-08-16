@@ -327,11 +327,19 @@ public sealed class ConnectionWindow : Form
         if (browser.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(browser.SelectedPath))
         {
             ShowLoading($"正在添加工作区 {browser.SelectedPath} …");
-            try
-            {
-                var added = await sc.AddRemoteWorkspaceAsync(browser.SelectedPath, line => SafeUi(() => { _loadingText.Text = line; }));
                 HideLoading();
-                // 让远端 dsh 重新读取工作区（后端有内存缓存，直接改文件不生效）：自动重启远端 dsh，工作区刷新后出现
+                // 主路径：dsh RPC workspace.create（后端正常创建，无需重启）；失败降级写文件+自动重启
+                var (rpcOk, rpcErr) = await sc.CreateWorkspaceRpcAsync(browser.SelectedPath, line => SafeUi(() => { _loadingText.Text = line; }));
+                if (rpcOk)
+                {
+                    NavigateCurrent();
+                    MessageBox.Show(this, $"已添加远端工作区：{browser.SelectedPath}\n\n已通过 dsh RPC 创建，无需重启。",
+                        "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                // fallback：写入 workspace.json + 自动重启远端使生效
+                ShowLoading($"RPC 失败（{rpcErr}），改用写入配置文件并重启远端…");
+                var added = await sc.AddRemoteWorkspaceAsync(browser.SelectedPath, line => SafeUi(() => { _loadingText.Text = line; }));
                 ShowLoading("正在重启远端 dsh 使工作区生效…");
                 try
                 {
@@ -347,12 +355,6 @@ public sealed class ConnectionWindow : Form
                     MessageBox.Show(this, $"工作区已写入：{added}\n\n远端重启失败（{ex.Message}），可稍后 Ctrl+Shift+R 手动重启。",
                         "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
-            }
-            catch (Exception ex)
-            {
-                HideLoading();
-                MessageBox.Show(this, ex.Message, "添加工作区失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
         }
     }
 

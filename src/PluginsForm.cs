@@ -8,6 +8,7 @@ namespace DshLauncher;
 /// </summary>
 public sealed class PluginsForm : ThemedForm
 {
+    private readonly IDshConnection _connection;
     private readonly PluginManager _manager;
     private readonly Func<Task> _restartHost;
     private readonly ListView _list = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, HideSelection = false, BorderStyle = BorderStyle.None, OwnerDraw = true };
@@ -34,9 +35,10 @@ public sealed class PluginsForm : ThemedForm
     };
     private readonly ToolTip _statusTip = new() { AutoPopDelay = 8000 };
 
-    public PluginsForm(PluginManager manager, Func<Task> restartHost)
+    public PluginsForm(IDshConnection connection, Func<Task> restartHost)
     {
-        _manager = manager;
+        _connection = connection;
+        _manager = connection.IsRemote ? null! : new PluginManager();
         _restartHost = restartHost;
         Text = "插件管理";
         Width = 1000;
@@ -128,6 +130,17 @@ public sealed class PluginsForm : ThemedForm
 
     private void RefreshList()
     {
+        if (_connection.IsRemote)
+        {
+            // SSH 远端：执行 dsh plugin list，输出到下方输出区
+            _list.BeginUpdate();
+            _list.Items.Clear();
+            _list.EndUpdate();
+            _status.Text = "远端模式 · 插件列表见下方输出（dsh plugin list）";
+            AppendOutput($">>> dsh plugin --profile web list");
+            _ = _connection.RunPluginAsync(new[] { "list", "--depth", "0" }, AppendOutput);
+            return;
+        }
         _list.BeginUpdate();
         _list.Items.Clear();
         foreach (var pl in _manager.ListPlugins())
@@ -163,7 +176,7 @@ public sealed class PluginsForm : ThemedForm
         _status.Text = $"正在{action} {pkg.Trim()} …";
         try
         {
-            var code = await _manager.RunAsync(new[] { action, pkg.Trim() }, AppendOutput);
+            var code = await _connection.RunPluginAsync(new[] { action, pkg.Trim() }, AppendOutput);
             if (code == 0)
             {
                 _status.Text = $"{action} 成功，正在重启宿主使插件生效…";

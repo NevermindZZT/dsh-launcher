@@ -1,85 +1,92 @@
 # DshLauncher — DeepSeek Harness 一键启动器
 
-Windows 上的 DeepSeek Harness（dsh）桌面启动器：**双击即用**，内置 WebView2 窗口直接打开 dsh Web UI。
+![Version](https://img.shields.io/badge/version-v0.1.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
+![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)
+![Size](https://img.shields.io/badge/single%20exe-1.4MB-lightgrey)
+
+**DeepSeek Harness（dsh）桌面启动器**：双击即用，打开 dsh Web UI；支持 SSH 远程连接多台服务器、一键同步本地配置与插件。
 
 ## 项目背景
 
-DeepSeek Harness 官方使用方式是「终端启动 + 浏览器访问」两步流程：
+[DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh）是 DeepSeek 的 CLI 驱动 AI 开发环境，官方使用方式是「终端启动 + 浏览器访问」两步流程：
 
-- 在终端执行 `dsh web` 启动本地服务，再手动打开浏览器访问 `http://127.0.0.1:3080`；
-- 插件安装 / 卸载 / 更新需要回到终端执行 `dsh plugin ...`，并重启服务才生效；
-- 服务的启动、查看日志、重启都依赖终端，桌面使用体验割裂。
+- 终端执行 `dsh web` 启动服务，再手动打开浏览器；
+- 插件安装 / 卸载 / 更新、日志查看、服务重启全部依赖终端；
+- 想用远程服务器的 dsh，只能在服务器上开终端。
 
-## 项目目标
-
-做一个极简的 Windows 启动器，坚持四条原则：
-
-1. **一键启动**：双击即打开 dsh Web UI —— 自动连接已有实例（attach），或后台隐藏启动服务（spawn）并接管生命周期；
-2. **最小依赖**：不捆绑 Node.js / Electron / dsh 内核 —— dsh 保持官方原生安装（`npm install -g @deepseek-ai/dsh`），渲染复用系统 WebView2 Runtime，运行复用 .NET 8 Desktop Runtime；
-3. **小体积**：**单个 exe 约 1.4 MB**，绿色解压即用；
-4. **不做多余功能**：只提供启动、重启、日志、插件管理、设置等必要操作，不引入账号体系、插件市场、云同步等重功能。
+**DshLauncher 的目标**：把这些操作装进一个桌面窗口 —— 双击打开 Web UI，托盘管理生命周期，SSH 直连远程服务器，本地配置与插件一键同步到服务器。
 
 ## 特性
 
-- **单文件交付**：`dist\DshLauncher.exe`（约 1.4 MB，零依赖文件）
-- **双击即用**：自动 attach 已有 dsh 实例（默认 `127.0.0.1:3080`）或隐藏启动新服务（`--port 0` 由系统分配）
-- **内置窗口**：WebView2 渲染 dsh UI，窗口标题实时跟随网页动态标题（会话名）
-- **托盘常驻**：关闭窗口隐藏到托盘、服务保持运行（秒开）；托盘菜单：打开主窗口 / 重启宿主 / 日志 / 插件管理 / 设置 / 更新 dsh / 退出
-- **快捷键**：`Ctrl+R` 重启宿主 · `Ctrl+L` 日志 · `Ctrl+P` 插件管理 · `Ctrl+,` 设置 · `Ctrl+Q` 退出
-- **日志窗口**：实时查看宿主 stdout/stderr（落盘 + 自动轮转）
-- **插件管理**：列装已装插件，安装 / 卸载 / 更新走官方 `dsh plugin`，操作后自动重启宿主
-- **安装与更新引导**：未安装 dsh 时一键安装；启动后自动检查新版本，托盘一键升级
-- **Win11 风格界面**：Mica 材质 + 自适应系统深浅主题 + Fluent 控件（圆角按钮 / 输入框 / 自绘复选框单选）
-- **单实例**：Mutex 防止并发启动导致 dsh 配置冲突
-- **安全默认**：仅绑定 loopback、WebView 导航守卫、权限最小化
+- **一键启动**：双击即打开 dsh Web UI（自动连接已有实例或后台启动新服务）
+- **单文件交付**：单个 exe 约 1.4 MB，绿色免安装，不捆绑 Node / Electron / dsh 内核
+- **托盘常驻**：关闭窗口隐藏到托盘、服务保持运行；重启 / 日志 / 插件 / 设置 / 更新 dsh 全在托盘
+- **插件管理**：可视化安装 / 卸载 / 更新插件，无需终端
+- **SSH 远程（多服务器）**：本地窗口 + 远程 dsh —— 基于系统 OpenSSH，支持密钥 / 密码认证、从 `~/.ssh/config` 导入主机、每个服务器独立窗口
+- **配置与插件同步**：本地 dsh 配置（`settings.yaml` 等）与已装插件一键同步到服务器，不用逐个重装
+- **快捷键**：`Ctrl+Shift+R/L/P/S/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
 
-## 快速开始
+## 类似项目对比
 
-1. 安装 Node.js 与 dsh（一次）：`npm install -g @deepseek-ai/dsh`（未安装时启动器会引导一键安装）
-2. 运行 `dist\DshLauncher.exe`
-3. （可选）托盘 → 设置 → 勾选「开机自动启动」
+| 方案 | 技术栈 | 体积 | SSH 远程 | 说明 |
+|---|---|---|---|---|
+| **DshLauncher（本方案）** | C# WinForms + WebView2 | **约 1.4 MB 单文件** | ✅ 系统 SSH，多服务器多窗口 | 轻量、免终端、配置/插件同步 |
+| [deepseek-harness-desktop](https://github.com/anywhere-labs/deepseek-harness-desktop) | 桌面 Web 容器 | 较大 | ❓ | DSH 生态桌面端，功能更重 |
+| 官方流程（`dsh web` + 浏览器） | CLI + 浏览器 | 0 | ❌ | 基础用法，依赖终端，无管理能力 |
+| VS Code Remote-SSH（模式参考） | 桌面 + SSH | 大 | ✅ | 本地 UI + 远程环境（dsh 无此方案，DshLauncher 提供类似体验） |
 
-## 依赖
+**设计取向**：DshLauncher 坚持「最小依赖、小体积、不做多余功能」—— 不引入账号体系、插件市场、云同步等重功能，聚焦「打开、管理、远程、同步」。
 
-| 组件 | 说明 |
+## 使用方法
+
+### 1. 安装
+
+- 从 **Releases** 下载 `DshLauncher.exe`（单文件，绿色免安装）；
+- 需要本机安装 dsh：`npm install -g @deepseek-ai/dsh`（启动器首次运行也会引导安装）；
+- 需要 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)（Windows 10/11，部分系统已自带）。
+
+### 2. 本地使用
+
+双击 `DshLauncher.exe` → 自动打开 dsh Web UI。窗口右上角关闭即隐藏到托盘（服务保持运行），托盘菜单管理一切。
+
+### 3. SSH 远程连接
+
+1. **准备服务器**：安装 Node.js 与 dsh（`npm install -g @deepseek-ai/dsh`）
+2. **添加连接**：设置 → SSH 连接 → 新增（或从「系统 SSH 配置」导入 `~/.ssh/config` 已有主机）
+   - 认证：推荐密钥（点「生成密钥」→「复制公钥」粘贴到服务器 `~/.ssh/authorized_keys`），或直接填密码
+   - 本地端口留 0（自动分配）
+3. **测试连接**：设置里「测试连接」→ 显示 SSH 正常 + 远端 dsh 版本
+4. **连接**：`Ctrl+Shift+C` 打开连接选择器 → 选择服务器 → 独立窗口打开远程 dsh
+5. **同步**：SSH 窗口按 `Ctrl+Shift+Y`，把本地配置（`settings.yaml` 等）与已装插件同步到服务器，完成后可选重启远端生效
+
+### 4. 快捷键
+
+| 快捷键 | 功能 |
 |---|---|
-| Windows 10 / 11 | Win11 22H2+ 体验最佳（Mica 材质）；Win10 自动降级深色纯色 |
-| .NET 8 Desktop Runtime | 未安装时需从微软官网安装（约 30 MB） |
-| WebView2 Runtime | Win11 已内置；Win10 通常随 Edge 安装，缺失时启动器引导安装 |
-| Node.js + dsh（npm 全局） | dsh 官方安装方式；启动器只复用，不捆绑 |
-| pnpm（可选） | 仅插件管理功能需要 |
+| `Ctrl+Shift+R` | 重启当前连接 |
+| `Ctrl+Shift+L` | 日志 |
+| `Ctrl+Shift+P` | 插件管理 |
+| `Ctrl+Shift+S` | 设置 |
+| `Ctrl+Shift+C` | 连接选择器（本地 + 各服务器） |
+| `Ctrl+Shift+Y` | 同步本地配置与插件到当前服务器 |
+| `Ctrl+Shift+Q` | 退出 |
 
 ## 构建
 
+需要 .NET 8 SDK（Windows）：
+
 ```powershell
-# 一键发布单文件 exe（直接输出到 dist\DshLauncher.exe）
-& .\publish-single.ps1
+git clone https://github.com/<your-name>/dsh-launcher
+cd dsh-launcher
+.publish-single.ps1    # 产出 distDshLauncher.exe 单文件
 ```
 
-构建环境：.NET 8 SDK（离线场景可在 `.tools\dotnet` 放置，git 已忽略）+ NuGet 源（离线场景在 `.tools\nuget` 放本地包，正常网络可直接用官方源）。
+## 开源协议
 
-## 目录结构
+[MIT](LICENSE) © DshLauncher contributors
 
-```
-DshLauncher/
-├── src/                      # 源码（C# / WinForms / WebView2）
-│   ├── MainForm.cs           # 主窗口：WebView2 + 托盘 + 快捷键 + 主题
-│   ├── HostSupervisor.cs     # dsh 宿主进程管理（spawn/attach/就绪行/Job 终止）
-│   ├── PluginManager.cs      # 插件管理（列装 + dsh plugin 转发）
-│   └── ...（设置/日志/主题/更新等）
-├── dist/                     # 交付物：DshLauncher.exe（单文件，由发布脚本生成）
-├── publish-single.ps1        # 单文件发布脚本（输出到 dist）
-├── NuGet.config              # 构建用 NuGet 源配置
-└── README.md
-```
+---
 
-## 技术要点
-
-- **进程生命周期**：attach 探测（HTTP + 标记识别）或 spawn（解析 stdout 就绪行 `dsh web: http://127.0.0.1:<port>`）；Job Object 保证进程树整体清理；导航失败自动重试
-- **主题**：DWM Mica + 深/浅色标题栏跟随系统主题；子窗口自绘 Fluent 控件（`ThemedForm` 基类统一调色板）
-- **安全**：只放行 loopback 导航，外部链接交系统浏览器；WebView 权限默认拒绝（放行剪贴板）
-- **图标**：DeepSeek 官方白色鲸鱼（提取自官方资源重着色，多尺寸嵌入）
-
-## License
-
-MIT
+*与 DeepSeek Harness（dsh）无隶属关系；dsh 是 DeepSeek 的独立开源项目。*

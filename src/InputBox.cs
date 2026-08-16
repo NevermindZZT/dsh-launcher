@@ -8,8 +8,12 @@ namespace DshLauncher;
 public sealed class InputBox : Panel
 {
     private int _cornerRadius = 6;
+    private Color _windowBack = Color.FromArgb(0x1E, 0x1E, 0x1E);
 
     public TextBox Inner { get; }
+
+    /// <summary>设置控件所在窗口的背景色（圆角外区域填充，避免下层内容透出虚影）。</summary>
+    public void SetWindowBack(Color c) { _windowBack = c; Invalidate(); }
 
     public int CornerRadius
     {
@@ -41,6 +45,11 @@ public sealed class InputBox : Panel
     {
         var g = pevent.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        // 先填充控件整个背景（圆角外区域不透出下层内容）
+        using (var bg = new SolidBrush(_windowBack))
+        {
+            g.FillRectangle(bg, ClientRectangle);
+        }
         var rect = new Rectangle(0, 0, Width - 1, Height - 1);
         using var path = RoundedButton.RoundedRect(rect, _cornerRadius);
         using var brush = new SolidBrush(BackColor);

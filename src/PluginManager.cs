@@ -13,6 +13,9 @@ public sealed class PluginManager
 {
     private const string ProfileName = "web";
 
+    /// <summary>dsh 数据目录（$DSH_HOME 或 ~/.dsh）。</summary>
+    public string DshHome { get; }
+
     public string ProfileDir { get; }
 
     public PluginManager()
@@ -22,6 +25,7 @@ public sealed class PluginManager
         {
             dshHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
         }
+        DshHome = dshHome;
         ProfileDir = Path.Combine(dshHome, "profiles", ProfileName);
     }
 

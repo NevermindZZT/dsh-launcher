@@ -9,16 +9,19 @@ namespace DshLauncher;
 /// <summary>
 /// 主窗口：无工具栏/状态栏，WebView2 独占窗口内容。
 /// 标题栏配色自动跟随系统深色/浅色模式（DWM），WebView2 背景同为深色，与 dsh 深色 UI 一致。
-/// 全部控制入口在托盘菜单与快捷键：Ctrl+R 重启 / Ctrl+L 日志 / Ctrl+P 插件 / Ctrl+, 设置 / Ctrl+Q 退出。
+/// 全部控制入口在托盘菜单与快捷键：Ctrl+Shift+R 重启 / Ctrl+Shift+L 日志 / Ctrl+Shift+P 插件 / Ctrl+Shift+S 设置 / Ctrl+Shift+Q 退出。
 /// 关闭窗口默认隐藏到托盘（宿主保持运行）；托盘「退出」才停止服务。
 /// </summary>
 public sealed class MainForm : Form
 {
-    private readonly HostSupervisor _host = new();
     private readonly WebView2 _web = new();
     private readonly NotifyIcon _tray;
     private readonly AppSettings _settings = AppSettings.Load();
-    private readonly PluginManager _plugins = new();
+    // 连接抽象：本地（HostSupervisor）或 SSH 远端（SshConnection），构造时按设置创建
+    private readonly ConnectionManager _connections = new();
+    private IDshConnection _current = null!;
+
+    private readonly List<ConnectionWindow> _remoteWindows = new();
     private const string ShowEventName = "Local\\DshLauncher_ShowWindow";
     private EventWaitHandle? _showEvent;
     private Thread? _showWatcher;
@@ -26,6 +29,13 @@ public sealed class MainForm : Form
     private PluginsForm? _pluginsForm;
     private string? _pendingUpdate;
     private bool _quitting;
+    private bool _loadingHiddenGuard;
+
+    /// <summary>当前是否为 SSH 远程连接。</summary>
+    /// <summary>当前活动连接（多连接下指向 Tab 当前项，现有代码继续用 _host 引用）。</summary>
+    private IDshConnection _host => _current;
+
+    private bool IsRemote => _current.IsRemote;
 
     // 启动加载覆盖层（dsh 启动/导航期间显示提示与动画）
     private readonly Panel _loadingOverlay = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 20, 24), Visible = true };
@@ -41,6 +51,9 @@ public sealed class MainForm : Form
     public MainForm()
     {
         Diag.Log("MainForm ctor start");
+        _connections.BuildFrom(_settings);
+        _current = _connections.Local;
+        Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
         Text = "DeepSeek Harness";
         // 默认大小按屏幕工作区自适应（约 92%），不再固定偏小
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1600, 1000);
@@ -69,11 +82,6 @@ public sealed class MainForm : Form
         };
         Controls.Add(_loadingOverlay);
 
-        // 应用设置到宿主
-        _host.AttachPort = _settings.AttachPort;
-        _host.WorkingDirectory = _settings.WorkingDirectory
-            ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
         // 托盘：全部控制入口
         _tray = new NotifyIcon
         {
@@ -83,40 +91,45 @@ public sealed class MainForm : Form
         };
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("打开主窗口", null, (_, _) => ShowMainWindow());
-        trayMenu.Items.Add("重启宿主  (Ctrl+R)", null, (_, _) => _ = RestartHostAsync());
+        // SSH 连接窗口（显示/激活）
+        foreach (var c in _connections.Connections.Skip(1))
+        {
+            var conn = c;
+            trayMenu.Items.Add("SSH: " + conn.DisplayName, null, (_, _) => ShowOrOpenRemoteWindow(conn));
+        }
         trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("日志  (Ctrl+L)", null, (_, _) => ShowLogForm());
-        trayMenu.Items.Add("插件管理  (Ctrl+P)", null, (_, _) => ShowPluginsForm());
-        trayMenu.Items.Add("设置  (Ctrl+,)", null, (_, _) => ShowSettingsForm());
+        trayMenu.Items.Add("重启宿主  (Ctrl+Shift+R)", null, (_, _) => _ = RestartHostAsync());
+        trayMenu.Items.Add(new ToolStripSeparator());
+        trayMenu.Items.Add("日志  (Ctrl+Shift+L)", null, (_, _) => ShowLogForm());
+        trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowPluginsForm());
+        trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowSettingsForm());
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("更新 dsh…", null, (_, _) => _ = UpdateDshAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("退出  (Ctrl+Q)", null, (_, _) => OnQuit());
+        trayMenu.Items.Add("退出  (Ctrl+Shift+Q)", null, (_, _) => OnQuit());
         trayMenu.Renderer = new ThemeToolStripRenderer(); // WinUI 3 风格主题菜单
         _tray.ContextMenuStrip = trayMenu;
         _tray.DoubleClick += (_, _) => ShowMainWindow();
 
-        // 宿主事件 → UI
-        _host.StateChanged += s => SafeUi(() =>
+        // 本地连接事件（SSH 连接由各自的 ConnectionWindow 订阅处理）
+        var local = _connections.Local;
+        local.StateChanged += s => SafeUi(() =>
         {
             UpdateTrayStatus(s);
-            // 启动过程中更新加载提示文字
-            if (s == HostState.Starting)
-            {
-                ShowLoading(_host.IsAttached ? "正在连接已有 dsh 实例…" : "正在启动 dsh 服务…");
-            }
-            else if (s == HostState.Running)
-            {
-                ShowLoading("正在加载界面…");
-            }
+            if (s == HostState.Starting) ShowLoading("正在启动 dsh 服务…");
+            else if (s == HostState.Running) ShowLoading("正在加载界面…");
         });
-        // 注意：不再在此导航（OnShown 统一导航），避免与 OnShown 的双导航竞争
-        _host.Ready += url => SafeUi(() => Diag.Log("host ready: " + url));
-        _host.UnexpectedExit += diag => SafeUi(() =>
+        local.Ready += url => SafeUi(() =>
+        {
+            Diag.Log("local ready: " + url);
+            Navigate(url);
+            HideLoading();
+        });
+        local.UnexpectedExit += diag => SafeUi(() =>
         {
             if (!_quitting && Visible)
             {
-                MessageBox.Show(this, diag + "\n\n可用托盘菜单「重启宿主」或 Ctrl+R 重新启动。", "dsh 异常退出",
+                MessageBox.Show(this, diag + "\n\n可用托盘菜单「重启宿主」或 Ctrl+Shift+R 重新启动。", "dsh 异常退出",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         });
@@ -144,7 +157,7 @@ public sealed class MainForm : Form
 
         FormClosed += (_, _) =>
         {
-            _host.Dispose();
+            if (_host is IDisposable d) { try { d.Dispose(); } catch { } }
             try { _showEvent?.Dispose(); } catch { }
         };
         Diag.Log("MainForm ctor done");
@@ -179,6 +192,58 @@ public sealed class MainForm : Form
         _spinner.SetAccent(p.Accent);
     }
 
+    /// <summary>显示 SSH 连接窗口（已打开则激活，否则新建并连接）。</summary>
+    private void ShowOrOpenRemoteWindow(IDshConnection conn)
+    {
+        var win = _remoteWindows.FirstOrDefault(w => ReferenceEquals(w.Connection, conn));
+        if (win != null && !win.IsDisposed)
+        {
+            win.Show();
+            win.Activate();
+            return;
+        }
+        win = new ConnectionWindow(conn);
+        _remoteWindows.Add(win);
+        win.FormClosed += (_, _) => _remoteWindows.Remove(win);
+        win.Show(this);
+    }
+
+    /// <summary>Ctrl+Shift+C：循环激活 SSH 连接窗口（再次按下回到主窗口）。</summary>
+    /// <summary>Ctrl+Shift+C：弹出连接选择器，列出可连接的服务器，选择后连接/打开窗口。</summary>
+    public void ShowConnectionPicker()
+    {
+        // 打开前同步最新连接配置（设置中添加的服务器立即生效）
+        _connections.SyncFrom(_settings);
+        if (_connections.Connections.Count <= 1)
+        {
+            _tray.ShowBalloonTip(3000, "DeepSeek Harness",
+                "未配置 SSH 连接。请在设置 → SSH 连接中添加服务器。", ToolTipIcon.Info);
+            return;
+        }
+        using var picker = new ConnectionPickerForm(_connections);
+        if (picker.ShowDialog(this) == DialogResult.OK && picker.Selected != null)
+        {
+            var c = picker.Selected;
+            if (c.IsRemote)
+            {
+                ShowOrOpenRemoteWindow(c); // 已打开则激活，未打开则新建窗口并连接
+            }
+            else
+            {
+                if (c.State != HostState.Running) _ = ConnectLocalAsync();
+                ShowMainWindow();
+            }
+        }
+    }
+
+    /// <summary>连接本地（供选择器/托盘调用）。</summary>
+    private async Task ConnectLocalAsync()
+    {
+        ShowLoading("正在启动本地 dsh…");
+        try { await _current.StartAsync(); }
+        catch (Exception ex) { HideLoading(); MessageBox.Show(this, ex.Message, "连接失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+
     /// <summary>显示启动加载层并设置提示文字。</summary>
     private void ShowLoading(string text)
     {
@@ -196,7 +261,25 @@ public sealed class MainForm : Form
     {
         if (IsDisposed) return;
         if (InvokeRequired) { BeginInvoke(HideLoading); return; }
+        Diag.Log($"HideLoading: wasVisible={_loadingOverlay.Visible}");
         _loadingOverlay.Visible = false;
+        // 保险：若 1.5s 后仍被重新显示（如导航竞态），再次隐藏（防止加载层残留导致白屏）
+        if (!_loadingHiddenGuard)
+        {
+            _loadingHiddenGuard = true;
+            var t = new System.Threading.Timer(_ =>
+            {
+                SafeUi(() =>
+                {
+                    _loadingHiddenGuard = false;
+                    if (_loadingOverlay.Visible && !_quitting)
+                    {
+                        Diag.Log("HideLoading: overlay re-shown, force hide");
+                        _loadingOverlay.Visible = false;
+                    }
+                });
+            }, null, TimeSpan.FromMilliseconds(1500), System.Threading.Timeout.InfiniteTimeSpan);
+        }
     }
 
     protected override async void OnShown(EventArgs e)
@@ -209,7 +292,7 @@ public sealed class MainForm : Form
         {
             await EnsureWebView2Async();
 
-            // 未安装 dsh → 引导安装
+            // 未安装 dsh → 引导安装（本地连接需要）
             if (!DshUpdater.IsInstalled())
             {
                 var res = MessageBox.Show(this,
@@ -232,8 +315,10 @@ public sealed class MainForm : Form
                 }
             }
 
-            var url = await _host.StartAsync();
-            Navigate(url);
+            // 启动本地连接（主窗口）；导航统一由本地 Ready 事件触发（避免双导航竞争导致页面空白）。
+            // 远程 SSH 连接不自动打开 —— 按需用 Ctrl+Shift+C 选择器或托盘菜单连接。
+            _current = _connections.Local;
+            await _current.StartAsync();
 
             // 启动后异步检查 dsh 更新
             _ = CheckForUpdateAsync();
@@ -271,6 +356,19 @@ public sealed class MainForm : Form
         _web.DefaultBackgroundColor = Color.FromArgb(18, 20, 24);
         cwv.NavigationStarting += OnNavigationStarting;
         cwv.PermissionRequested += OnPermissionRequested;
+        // WebView2 焦点下的快捷键拦截：Chromium 会优先消费 Ctrl+Shift 组合键，
+        // 通过内部 CoreWebView2Controller 的 AcceleratorKeyPressed 事件接管（WinForms 控件未公开该属性，反射获取）
+        try
+        {
+            var controllerField = typeof(WebView2).GetField("_coreWebView2Controller",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var controller = controllerField?.GetValue(_web) as CoreWebView2Controller;
+            if (controller != null) controller.AcceleratorKeyPressed += OnAcceleratorKeyPressed;
+        }
+        catch
+        {
+            // 反射失败不影响其它功能
+        }
         // 窗口标题跟随网页 document.title（dsh 会按会话动态设置，如 "DeepSeek Harness - 评估方案"）
         cwv.DocumentTitleChanged += (_, _) =>
         {
@@ -352,7 +450,7 @@ public sealed class MainForm : Form
             if (!_quitting)
             {
                 _tray.ShowBalloonTip(6000, "DeepSeek Harness",
-                    "dsh 页面加载失败（服务可能未就绪）。可右键托盘「重启宿主」或按 Ctrl+R 重试。",
+                    "dsh 页面加载失败（服务可能未就绪）。可右键托盘「重启宿主」或按 Ctrl+Shift+R 重试。",
                     ToolTipIcon.Warning);
             }
             return;
@@ -379,19 +477,43 @@ public sealed class MainForm : Form
         }
     }
 
-    /// <summary>快捷键：Ctrl+R 重启 / Ctrl+L 日志 / Ctrl+P 插件 / Ctrl+, 设置 / Ctrl+Q 退出。</summary>
+    /// <summary>
+    /// 快捷键（Ctrl+Shift 组合，避免与 dsh Web UI / 浏览器冲突）：
+    /// Ctrl+Shift+R 重启 / Ctrl+Shift+L 日志 / Ctrl+Shift+P 插件 / Ctrl+Shift+S 设置 / Ctrl+Shift+Q 退出 / Ctrl+Shift+C 连接切换（SSH 模式）。
+    /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (HandleShortcut(keyData)) return true;
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    /// <summary>统一快捷键处理（ProcessCmdKey 与 WebView2 AcceleratorKeyPressed 共用）。</summary>
+    private bool HandleShortcut(Keys keyData)
     {
         switch (keyData)
         {
-            case Keys.Control | Keys.R: _ = RestartHostAsync(); return true;
-            case Keys.Control | Keys.L: ShowLogForm(); return true;
-            case Keys.Control | Keys.P: ShowPluginsForm(); return true;
-            case Keys.Control | Keys.Oemcomma: ShowSettingsForm(); return true;
-            case Keys.Control | Keys.Q: OnQuit(); return true;
+            case Keys.Control | Keys.Shift | Keys.R: _ = RestartHostAsync(); return true;
+            case Keys.Control | Keys.Shift | Keys.L: ShowLogForm(); return true;
+            case Keys.Control | Keys.Shift | Keys.P: ShowPluginsForm(); return true;
+            case Keys.Control | Keys.Shift | Keys.S: ShowSettingsForm(); return true;
+            case Keys.Control | Keys.Shift | Keys.Q: OnQuit(); return true;
+            case Keys.Control | Keys.Shift | Keys.C: ShowConnectionPicker(); return true;
         }
-        return base.ProcessCmdKey(ref msg, keyData);
+        return false;
     }
+
+    /// <summary>WebView2 焦点下的快捷键：Chromium 优先消费 Ctrl+Shift 组合键，这里接管并标记 Handled。</summary>
+    private void OnAcceleratorKeyPressed(object? sender, CoreWebView2AcceleratorKeyPressedEventArgs e)
+    {
+        var ctrl = (GetKeyState(0x11) & 0x8000) != 0; // VK_CONTROL
+        var shift = (GetKeyState(0x10) & 0x8000) != 0; // VK_SHIFT
+        if (!ctrl || !shift) return;
+        var key = (Keys)e.VirtualKey;
+        if (HandleShortcut(Keys.Control | Keys.Shift | key)) e.Handled = true;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern short GetKeyState(int nVirtKey);
 
     /// <summary>打开（或聚焦）宿主日志窗口。</summary>
     private void ShowLogForm()
@@ -413,7 +535,7 @@ public sealed class MainForm : Form
     {
         if (_pluginsForm == null || _pluginsForm.IsDisposed)
         {
-            _pluginsForm = new PluginsForm(_plugins, RestartHostAsync);
+            _pluginsForm = new PluginsForm(_host, RestartHostAsync);
             _pluginsForm.Show(this);
         }
         else
@@ -430,9 +552,15 @@ public sealed class MainForm : Form
         if (dlg.ShowDialog(this) == DialogResult.OK)
         {
             dlg.Apply();
-            _host.AttachPort = _settings.AttachPort;
-            _host.WorkingDirectory = _settings.WorkingDirectory
-                ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            // 同步连接列表（复用运行中实例，新增/删除的服务器生效）
+            _connections.SyncFrom(_settings);
+            // 本地连接特有设置
+            if (_host is HostSupervisor hs)
+            {
+                hs.AttachPort = _settings.AttachPort;
+                hs.WorkingDirectory = _settings.WorkingDirectory
+                    ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            }
         }
     }
 
@@ -443,7 +571,7 @@ public sealed class MainForm : Form
         _host.AppendLog(">>> npm install -g @deepseek-ai/dsh@latest");
         try
         {
-            var code = await DshUpdater.InstallOrUpdateAsync(line => _host.AppendLog(line));
+            var code = await _host.UpdateDshAsync(line => _host.AppendLog(line));
             if (code == 0)
             {
                 _host.AppendLog("dsh 安装成功");
@@ -470,7 +598,7 @@ public sealed class MainForm : Form
         try
         {
             await Task.Delay(6000);
-            var installed = await DshUpdater.GetInstalledVersionAsync();
+            var installed = await _host.GetInstalledVersionAsync();
             var latest = await DshUpdater.GetLatestVersionAsync();
             if (DshUpdater.IsNewer(latest, installed))
             {
@@ -490,7 +618,7 @@ public sealed class MainForm : Form
     /// <summary>检查并更新 dsh（npm install -g @deepseek-ai/dsh@latest），完成后重启宿主。</summary>
     private async Task UpdateDshAsync()
     {
-        var installed = await DshUpdater.GetInstalledVersionAsync();
+        var installed = await _host.GetInstalledVersionAsync();
         var latest = await DshUpdater.GetLatestVersionAsync();
         if (!DshUpdater.IsNewer(latest, installed))
         {
@@ -509,7 +637,7 @@ public sealed class MainForm : Form
         _host.AppendLog(">>> npm install -g @deepseek-ai/dsh@latest");
         try
         {
-            var code = await DshUpdater.InstallOrUpdateAsync(line => _host.AppendLog(line));
+            var code = await _host.UpdateDshAsync(line => _host.AppendLog(line));
             if (code == 0)
             {
                 _host.AppendLog("dsh 更新成功，正在重启宿主…");
@@ -532,6 +660,9 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>共享应用图标（供 ConnectionWindow 使用）。</summary>
+    public static Icon LoadAppIconShared() => LoadAppIcon();
+
     /// <summary>从嵌入资源加载应用图标。</summary>
     private static Icon LoadAppIcon()
     {
@@ -552,7 +683,7 @@ public sealed class MainForm : Form
     {
         var tip = s switch
         {
-            HostState.Running => "DeepSeek Harness · " + (_host.IsAttached ? "已连接外部实例" : "运行中"),
+            HostState.Running => "DeepSeek Harness · " + (IsRemote ? "远端已连接" : _host is HostSupervisor { IsAttached: true } ? "已连接外部实例" : "运行中"),
             HostState.Starting => "DeepSeek Harness · 启动中…",
             HostState.Failed => "DeepSeek Harness · 异常",
             _ => "DeepSeek Harness",
@@ -574,7 +705,7 @@ public sealed class MainForm : Form
         {
             _quitting = true;
             _tray.Visible = false;
-            try { _host.StopAsync().GetAwaiter().GetResult(); } catch { }
+            foreach (var c in _connections.Connections) { try { c.StopAsync().GetAwaiter().GetResult(); } catch { } }
             Application.Exit();
         }
         else
@@ -598,7 +729,7 @@ public sealed class MainForm : Form
     {
         _quitting = true;
         _tray.Visible = false;
-        try { await _host.StopAsync(); } catch { }
+        foreach (var c in _connections.Connections) { try { await c.StopAsync(); } catch { } }
         Application.Exit();
     }
 

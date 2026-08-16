@@ -13,6 +13,15 @@ public sealed class SettingsForm : ThemedForm
     private readonly ThemedRadioButton _rbExit = new() { Text = "停止服务并退出" };
     private readonly ThemedCheckBox _chkAutoStart = new() { Text = "开机自动启动" };
     private readonly Label _dshHome = new() { AutoSize = true };
+    // 连接模式
+    private readonly ThemedRadioButton _rbLocalMode = new() { Text = "本地" };
+    private readonly ThemedRadioButton _rbSshMode = new() { Text = "SSH 远程" };
+    private readonly ComboBox _cmbSsh = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, Height = 34 };
+    private readonly RoundedButton _btnSshAdd = new() { Text = "新增", Width = 64, Height = 34 };
+    private readonly RoundedButton _btnSshEdit = new() { Text = "编辑", Width = 64, Height = 34 };
+    private readonly RoundedButton _btnSshDel = new() { Text = "删除", Width = 64, Height = 34 };
+    private readonly RoundedButton _btnSshTest = new() { Text = "测试连接", Width = 100, Height = 34 };
+    private readonly Label _sshStatus = new() { AutoSize = true, Tag = "muted" };
     private readonly RoundedButton _btnSave = new() { Text = "保存", DialogResult = DialogResult.OK, Width = 96, Height = 36 };
     private readonly RoundedButton _btnCancel = new() { Text = "取消", DialogResult = DialogResult.Cancel, Width = 96, Height = 36 };
 
@@ -20,9 +29,9 @@ public sealed class SettingsForm : ThemedForm
     {
         _settings = settings;
         Text = "设置";
-        Width = 700;
-        Height = 600;
-        MinimumSize = new Size(620, 520);
+        Width = 780;
+        Height = 720;
+        MinimumSize = new Size(700, 640);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -33,11 +42,11 @@ public sealed class SettingsForm : ThemedForm
             ColumnCount = 2,
             Padding = new Padding(32, 30, 32, 14),
             AutoSize = false,
-            RowCount = 6,
+            RowCount = 9,
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 6; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 9; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _port.Inner.Text = settings.AttachPort > 0 ? settings.AttachPort.ToString() : "0";
         _cwd.Inner.Text = settings.WorkingDirectory ?? "";
@@ -47,6 +56,14 @@ public sealed class SettingsForm : ThemedForm
         var dshHome = Environment.GetEnvironmentVariable("DSH_HOME")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
         _dshHome.Text = dshHome;
+
+        // SSH 连接列表（多连接；本地连接始终存在）
+        foreach (var c in settings.SshConnections) _cmbSsh.Items.Add(c.Name);
+        if (_cmbSsh.Items.Count > 0) _cmbSsh.SelectedIndex = 0;
+        _btnSshAdd.Click += (_, _) => AddSshConnection();
+        _btnSshEdit.Click += (_, _) => EditSshConnection();
+        _btnSshDel.Click += (_, _) => DeleteSshConnection();
+        _btnSshTest.Click += (_, _) => _ = TestSshConnectionAsync();
         _btnBrowse.Click += (_, _) =>
         {
             using var dlg = new FolderBrowserDialog { Description = "选择宿主进程的工作目录" };
@@ -77,6 +94,28 @@ public sealed class SettingsForm : ThemedForm
         row++;
         panel.Controls.Add(MkLabel("DSH_HOME"), 0, row);
         panel.Controls.Add(_dshHome, 1, row);
+        row++;
+
+        // 连接模式
+        // SSH 连接管理（多连接，本地连接始终存在）
+        panel.Controls.Add(MkLabel("SSH 连接"), 0, row);
+        var sshWrap = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
+        _cmbSsh.Margin = new Padding(0, 0, 8, 8);
+        _btnSshAdd.Margin = new Padding(0, 0, 8, 8);
+        _btnSshEdit.Margin = new Padding(0, 0, 8, 8);
+        _btnSshDel.Margin = new Padding(0, 0, 8, 8);
+        _btnSshTest.Margin = new Padding(0, 0, 0, 8);
+        sshWrap.Controls.Add(_cmbSsh);
+        sshWrap.Controls.Add(_btnSshAdd);
+        sshWrap.Controls.Add(_btnSshEdit);
+        sshWrap.Controls.Add(_btnSshDel);
+        sshWrap.Controls.Add(_btnSshTest);
+        panel.Controls.Add(sshWrap, 1, row);
+        row++;
+
+        // 测试状态
+        panel.Controls.Add(MkLabel(""), 0, row);
+        panel.Controls.Add(_sshStatus, 1, row);
         row++;
 
         var btnWrap = new FlowLayoutPanel
@@ -123,5 +162,69 @@ public sealed class SettingsForm : ThemedForm
         _settings.AutoStart = _chkAutoStart.Checked;
         _settings.Save();
         _settings.ApplyAutoStart();
+    }
+
+    private void AddSshConnection()
+    {
+        using var dlg = new SshEditForm();
+        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.ApplyAndValidate() && dlg.Result != null)
+        {
+            _settings.SshConnections.Add(dlg.Result);
+            _settings.Save(); // 立即持久化（即使设置窗口未点保存）
+            _cmbSsh.Items.Add(dlg.Result.Name);
+            _cmbSsh.SelectedItem = dlg.Result.Name;
+            _sshStatus.Text = "已添加连接：" + dlg.Result.DisplayName;
+        }
+    }
+
+    private void EditSshConnection()
+    {
+        if (_cmbSsh.SelectedIndex < 0) return;
+        var idx = _cmbSsh.SelectedIndex;
+        var existing = _settings.SshConnections[idx];
+        using var dlg = new SshEditForm(existing);
+        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.ApplyAndValidate() && dlg.Result != null)
+        {
+            _settings.SshConnections[idx] = dlg.Result;
+            _settings.Save();
+            _cmbSsh.Items[idx] = dlg.Result.Name;
+            _cmbSsh.SelectedIndex = idx;
+            _sshStatus.Text = "已更新连接：" + dlg.Result.DisplayName;
+        }
+    }
+
+    private void DeleteSshConnection()
+    {
+        if (_cmbSsh.SelectedIndex < 0) return;
+        var idx = _cmbSsh.SelectedIndex;
+        var name = _settings.SshConnections[idx].Name;
+        if (MessageBox.Show(this, "删除 SSH 连接「" + name + "」？", "删除连接",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        _settings.SshConnections.RemoveAt(idx);
+        _settings.Save();
+        _cmbSsh.Items.RemoveAt(idx);
+        if (_cmbSsh.Items.Count > 0) _cmbSsh.SelectedIndex = 0;
+        _sshStatus.Text = "已删除连接";
+    }
+
+    private async Task TestSshConnectionAsync()
+    {
+        if (_cmbSsh.SelectedIndex < 0) return;
+        var cfg = _settings.SshConnections[_cmbSsh.SelectedIndex];
+        _btnSshTest.Enabled = false;
+        _sshStatus.Text = "正在测试连接…";
+        try
+        {
+            var result = await new SshConnection(cfg).TestConnectionAsync();
+            _sshStatus.Text = result;
+        }
+        catch (Exception ex)
+        {
+            _sshStatus.Text = "测试失败: " + ex.Message;
+        }
+        finally
+        {
+            _btnSshTest.Enabled = true;
+        }
     }
 }

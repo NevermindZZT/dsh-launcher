@@ -112,6 +112,7 @@ public abstract class ThemedForm : Form
                     n.BorderStyle = BorderStyle.FixedSingle;
                     break;
                 case InputBox ib:
+                    ib.SetWindowBack(p.WindowBack);
                     ib.BackColor = p.Surface;
                     ib.Inner.BackColor = p.Surface;
                     ib.Inner.ForeColor = p.Text;
@@ -119,6 +120,7 @@ public abstract class ThemedForm : Form
                 case Button b:
                     b.FlatStyle = FlatStyle.Flat;
                     b.BackColor = p.Surface;
+                    if (b is RoundedButton rb) rb.SetWindowBack(p.WindowBack);
                     b.ForeColor = p.Text;
                     b.FlatAppearance.BorderColor = p.Border;
                     b.FlatAppearance.MouseOverBackColor = ThemeHelper.Lighten(p.Surface);

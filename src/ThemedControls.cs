@@ -42,7 +42,7 @@ public sealed class ThemedCheckBox : CheckBox
             g.DrawLines(pen, new[] { new Point(box.X + 4, box.Y + 9), new Point(box.X + 8, box.Y + 13), new Point(box.X + 14, box.Y + 5) });
         }
         TextRenderer.DrawText(g, Text, Font, new Rectangle(26, 0, Width - 26, Height), _p.Text,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
     }
 }
 
@@ -85,6 +85,6 @@ public sealed class ThemedRadioButton : RadioButton
             g.FillEllipse(dot, cx - 2, cy - 2, 4, 4);
         }
         TextRenderer.DrawText(g, Text, Font, new Rectangle(26, 0, Width - 26, Height), _p.Text,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
     }
 }

@@ -21,7 +21,7 @@ public enum HostState
 /// 终止使用 Job Object（KILL_ON_JOB_CLOSE + TerminateJobObject），回退 Process.Kill(树)。
 /// stdout/stderr 实时追加到 %LOCALAPPDATA%\DshLauncher\logs\dsh-web.log 并广播 LogLine。
 /// </summary>
-public sealed class HostSupervisor : IDisposable
+public sealed class HostSupervisor : IDshConnection, IDisposable
 {
     public const int DefaultPort = 3080;
     public const string ReadinessPrefix = "dsh web: ";
@@ -94,6 +94,34 @@ public sealed class HostSupervisor : IDisposable
         IsAttached = false;
         return await SpawnAsync(ct);
     }
+
+    // ── IDshConnection（本地实现）──
+
+    public bool IsRemote => false;
+
+    public string DisplayName => "本地";
+
+    /// <summary>执行 dsh plugin（本地）：复用 PluginManager 的命令转发（node + dsh plugin --profile web）。</summary>
+    public Task<int> RunPluginAsync(string[] args, Action<string>? onOutput = null, CancellationToken ct = default)
+        => new PluginManager().RunAsync(args, onOutput, ct);
+
+    /// <summary>本地已安装 dsh 版本。</summary>
+    public Task<string?> GetInstalledVersionAsync() => DshUpdater.GetInstalledVersionAsync();
+
+    /// <summary>本地更新 dsh（npm install -g）。</summary>
+    public Task<int> UpdateDshAsync(Action<string>? onOutput = null, CancellationToken ct = default)
+        => DshUpdater.InstallOrUpdateAsync(onOutput, ct);
+
+    /// <summary>测试本地连接：返回当前 URL 或默认端口探测结果。</summary>
+    public async Task<string?> TestConnectionAsync(CancellationToken ct = default)
+    {
+        if (CurrentUrl != null) return CurrentUrl;
+        return await TryAttachExistingAsync(ct) ?? "本地连接可用（尚未启动 dsh）";
+    }
+
+    /// <summary>本地是配置/插件的源头，无需同步。</summary>
+    public Task<string> SyncFromLocalAsync(Action<string>? onOutput = null, CancellationToken ct = default)
+        => Task.FromResult("本地连接无需同步（本地即配置/插件源头）");
 
     /// <summary>停止宿主：attach 模式仅断开；spawn 模式终止整棵进程树。</summary>
     public async Task StopAsync()

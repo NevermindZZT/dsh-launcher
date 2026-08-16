@@ -19,11 +19,11 @@ public sealed class LogForm : ThemedForm
     private readonly ThemedCheckBox _autoScroll = new() { Text = "自动滚动", Checked = true };
     private readonly RoundedButton _btnOpenDir = new() { Text = "打开日志目录", Width = 128, Height = 36 };
     private readonly RoundedButton _btnClear = new() { Text = "清空", Width = 84, Height = 36 };
-    private readonly HostSupervisor _host;
+    private readonly IDshConnection _host;
     private readonly int _maxLines = 4000;
     private int _lineCount;
 
-    public LogForm(HostSupervisor host)
+    public LogForm(IDshConnection host)
     {
         _host = host;
         Text = "dsh 宿主日志";

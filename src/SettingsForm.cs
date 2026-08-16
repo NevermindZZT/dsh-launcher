@@ -95,6 +95,9 @@ public sealed class SettingsForm : ThemedForm
         panel.Controls.Add(MkLabel("DSH_HOME"), 0, row);
         panel.Controls.Add(_dshHome, 1, row);
         row++;
+        panel.Controls.Add(MkLabel("版本"), 0, row);
+        panel.Controls.Add(MkLabel(VersionHelper.Current), 1, row);
+        row++;
 
         // 连接模式
         // SSH 连接管理（多连接，本地连接始终存在）

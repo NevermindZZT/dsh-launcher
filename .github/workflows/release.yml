@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish single-file exe
+        shell: pwsh
+        run: |
+          dotnet publish src/DshLauncher.csproj -c Release -r win-x64 --self-contained false `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishTrimmed=false `
+            -p:DebugType=None -p:DebugSymbols=false -o release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DshLauncher-win-x64
+          path: release/DshLauncher.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/DshLauncher.exe
+          generate_release_notes: true

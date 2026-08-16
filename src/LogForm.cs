@@ -15,7 +15,9 @@ public sealed class LogForm : ThemedForm
         Dock = DockStyle.Fill,
         Font = new Font("Consolas", 9f),
         BorderStyle = BorderStyle.None,
+        ScrollBars = RichTextBoxScrollBars.None, // 系统滚动条浅色，改用自绘 ThemedScrollBar
     };
+    private readonly ThemedScrollBar _scrollBar = new() { Dock = DockStyle.Right, Width = 10 };
     private readonly ThemedCheckBox _autoScroll = new() { Text = "自动滚动", Checked = true };
     private readonly RoundedButton _btnOpenDir = new() { Text = "打开日志目录", Width = 128, Height = 36 };
     private readonly RoundedButton _btnClear = new() { Text = "清空", Width = 84, Height = 36 };
@@ -50,7 +52,14 @@ public sealed class LogForm : ThemedForm
         bottom.Controls.Add(_btnClear);
 
         Controls.Add(_box);
+        Controls.Add(_scrollBar);
         Controls.Add(bottom);
+        _scrollBar.ValueChanged += _ => ScrollToValue();
+        _box.MouseWheel += (_, e) =>
+        {
+            // 滚轮联动自绘滚动条（RichTextBox 无系统滚动条，自行滚动）
+            _scrollBar.Value -= e.Delta > 0 ? 1 : -1;
+        };
 
         // 先加载历史日志（最后 1000 行），再订阅实时追加
         LoadHistory();
@@ -70,11 +79,7 @@ public sealed class LogForm : ThemedForm
                 _box.AppendText(line + Environment.NewLine);
                 _lineCount++;
             }
-            if (_autoScroll.Checked)
-            {
-                _box.SelectionStart = _box.TextLength;
-                _box.ScrollToCaret();
-            }
+            UpdateScroll();
         }
         catch
         {
@@ -85,6 +90,32 @@ public sealed class LogForm : ThemedForm
     protected override void ApplyPalette(ThemeHelper.Palette p)
     {
         ApplyPaletteTree(this, p);
+        _scrollBar.TrackColor = p.WindowBack;
+        _scrollBar.ThumbColor = p.SurfaceAlt;
+        _scrollBar.Invalidate();
+    }
+
+    /// <summary>内容变化后同步滚动条范围；自动滚动时滚到尾部。</summary>
+    private void UpdateScroll()
+    {
+        _scrollBar.Maximum = Math.Max(0, _box.Lines.Length - 1);
+        _scrollBar.LargeChange = Math.Max(1, _box.ClientSize.Height / (_box.Font.Height + 2));
+        if (_autoScroll.Checked)
+        {
+            _scrollBar.Value = _scrollBar.Maximum; // 触发 ScrollToValue → 滚到底
+        }
+    }
+
+    /// <summary>把自绘滚动条位置应用到 RichTextBox（滚动到对应行）。</summary>
+    private void ScrollToValue()
+    {
+        try
+        {
+            var line = Math.Clamp(_scrollBar.Value, 0, Math.Max(0, _box.Lines.Length - 1));
+            _box.SelectionStart = _box.GetFirstCharIndexFromLine(line);
+            _box.ScrollToCaret();
+        }
+        catch { }
     }
 
     /// <summary>追加一行日志（线程安全；UI 线程外自动 Invoke）。</summary>
@@ -108,11 +139,7 @@ public sealed class LogForm : ThemedForm
             }
             _lineCount--;
         }
-        if (_autoScroll.Checked)
-        {
-            _box.SelectionStart = _box.TextLength;
-            _box.ScrollToCaret();
-        }
+        UpdateScroll();
     }
 
     private void OpenDir()

@@ -233,6 +233,79 @@ public sealed class SshConnection : IDshConnection, IDisposable
     /// 配置 base64 写入远端对应路径；插件逐一到远端 dsh plugin add（不用手动逐个安装）。
     /// 完成后需要重启远端 dsh 使插件生效（调用方处理）。
     /// </summary>
+
+    /// <summary>列出远端目录的子目录（用于远端目录浏览器）。</summary>
+    public List<string> ListRemoteDirectory(string path)
+    {
+        if (_tunnel == null) throw new InvalidOperationException("SSH 未连接");
+        var expanded = string.IsNullOrWhiteSpace(path) ? "~" : path.Trim();
+        var r = _runner.Exec($"ls -d {expanded}/*/ 2>/dev/null || echo", 30);
+        var dirs = r.Split('\n')
+            .Select(x => x.Trim().TrimEnd('/'))
+            .Where(x => x.Length > 0 && !x.Contains("[exit") && x != "." && x != "..")
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return dirs;
+    }
+
+    /// <summary>把选中的远端路径写入 dsh 工作区存储（~/.dsh/storages/workspace.json），刷新页面即可见。</summary>
+    public async Task<string> AddRemoteWorkspaceAsync(string path, Action<string>? onOutput = null, CancellationToken ct = default)
+    {
+        if (_tunnel == null) throw new InvalidOperationException("SSH 未连接");
+        var dshHome = _runner.Exec("echo ${DSH_HOME:-$HOME/.dsh}", 30).Trim();
+        var wsFile = $"{dshHome}/storages/workspace.json";
+        var raw = _runner.Exec($"cat {wsFile} 2>/dev/null || echo '{{}}'", 30);
+
+        // 解析并追加工作区条目（对齐 dsh 格式：unit/global.workspaceIds/tables.workspaces）
+        var root = (System.Text.Json.Nodes.JsonNode.Parse(raw) ?? new System.Text.Json.Nodes.JsonObject()).AsObject();
+        var tables = root["tables"]?.AsObject() ?? new System.Text.Json.Nodes.JsonObject();
+        var wsTable = tables["workspaces"]?.AsObject() ?? new System.Text.Json.Nodes.JsonObject();
+        var global = root["global"]?.AsObject() ?? new System.Text.Json.Nodes.JsonObject();
+        var ids = global["workspaceIds"]?.AsArray() ?? new System.Text.Json.Nodes.JsonArray();
+
+        // 路径已存在则复用（不重复添加）
+        foreach (var kv in wsTable)
+        {
+            if (kv.Value?["path"]?.GetValue<string>() == path)
+            {
+                onOutput?.Invoke($"工作区已存在: {path}");
+                return path;
+            }
+        }
+
+        var id = Guid.NewGuid().ToString();
+        var now = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'");
+        var title = path.TrimEnd('/').Split('/').LastOrDefault() ?? path;
+        wsTable[id] = new System.Text.Json.Nodes.JsonObject
+        {
+            ["path"] = path,
+            ["title"] = title,
+            ["sessionIds"] = new System.Text.Json.Nodes.JsonArray(),
+            ["createdAt"] = now,
+            ["updatedAt"] = now,
+        };
+        ids.Add(id);
+        tables["workspaces"] = wsTable;
+        root["tables"] = tables;
+        global["workspaceIds"] = ids;
+        root["global"] = global;
+        if (root["unit"] == null)
+        {
+            root["unit"] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["name"] = "workspace",
+                ["version"] = 2,
+            };
+        }
+
+        // base64 写回远端
+        var b64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(root.ToJsonString()));
+        var cmd = $"mkdir -p {dshHome}/storages && echo {b64} | base64 -d > {wsFile} && echo ok";
+        var r = _runner.Exec(cmd, 60);
+        if (!r.Contains("ok")) throw new InvalidOperationException("写入工作区失败: " + r.Trim().Replace("\n", " "));
+        onOutput?.Invoke($"已添加远端工作区: {path} ({title})");
+        return path;
+    }
     public async Task<string> SyncFromLocalAsync(Action<string>? onOutput = null, CancellationToken ct = default)
     {
         if (_tunnel == null)

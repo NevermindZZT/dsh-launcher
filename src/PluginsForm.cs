@@ -49,9 +49,7 @@ public sealed class PluginsForm : ThemedForm
         _list.Columns.Add("类型", 130);
         _list.Columns.Add("规格", 260);
         _list.Resize += (_, _) => ResizeColumns();
-        _list.DrawColumnHeader += OnDrawColumnHeader;
-        _list.DrawSubItem += (_, e) => e.DrawDefault = true;
-        _list.DrawItem += (_, e) => { }; // 与 DrawSubItem 配合：Details 模式不绘制整行背景（由子项默认绘制）
+        ThemeHelper.SetupListView(_list, ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode()));
 
         var top = new FlowLayoutPanel
         {
@@ -83,23 +81,7 @@ public sealed class PluginsForm : ThemedForm
     {
         ApplyPaletteTree(this, p);
         _status.ForeColor = p.MutedText;
-        _list.Invalidate();
-    }
-
-    /// <summary>自绘列头：深色背景 + 主题文字 + 分隔线（WinUI 3 风格表头）。</summary>
-    private void OnDrawColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
-    {
-        var p = Palette;
-        var rect = e.Bounds;
-        using var fill = new SolidBrush(p.SurfaceAlt);
-        e.Graphics.FillRectangle(fill, rect);
-        using var pen = new Pen(p.Border);
-        e.Graphics.DrawLine(pen, rect.Right - 1, rect.Top + 3, rect.Right - 1, rect.Bottom - 3);
-        var col = e.ColumnIndex >= 0 && e.ColumnIndex < _list.Columns.Count ? _list.Columns[e.ColumnIndex] : null;
-        var text = col?.Text ?? "";
-        var textRect = new Rectangle(rect.X + 8, rect.Y, Math.Max(0, rect.Width - 16), rect.Height);
-        TextRenderer.DrawText(e.Graphics, text, Font, textRect, p.Text,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        ThemeHelper.SetupListView(_list, p);
     }
 
     /// <summary>ListView 列宽随窗口自适应（比例分配，防止内容溢出被裁剪）。</summary>

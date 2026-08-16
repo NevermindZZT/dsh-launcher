@@ -68,6 +68,47 @@ public static class ThemeHelper
         Color Accent,       // 强调色（选中/勾选）
         Color AccentPressed); // 强调色按下/悬停
 
+    /// <summary>统一深色 ListView：列头全宽背景（消除右侧白色）、行背景（消除 DrawItem 空实现导致的白色区域）、子项文字。</summary>
+    public static void SetupListView(ListView lv, Palette p)
+    {
+        lv.OwnerDraw = true;
+        lv.BackColor = p.Surface;
+        lv.ForeColor = p.Text;
+        lv.MultiSelect = false; // 单选（避免多个 item 同时高亮/焦点）
+        lv.GridLines = false;
+        lv.DrawColumnHeader += (_, e) =>
+        {
+            using var fill = new SolidBrush(p.SurfaceAlt);
+            e.Graphics.FillRectangle(fill, new Rectangle(0, e.Bounds.Y, lv.ClientSize.Width, e.Bounds.Height));
+            var col = e.ColumnIndex >= 0 && e.ColumnIndex < lv.Columns.Count ? lv.Columns[e.ColumnIndex] : null;
+            var text = col?.Text ?? "";
+            TextRenderer.DrawText(e.Graphics, text, lv.Font,
+                new Rectangle(e.Bounds.X + 8, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height), p.Text,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        };
+        lv.DrawItem += (_, e) =>
+        {
+            var selected = (e.State & ListViewItemStates.Selected) != 0;
+            using var b = new SolidBrush(selected ? Color.FromArgb(80, p.Accent) : p.Surface);
+            e.Graphics.FillRectangle(b, e.Bounds);
+            // 焦点框（未选中时细边框提示焦点位置）
+            if ((e.State & ListViewItemStates.Focused) != 0 && !selected)
+            {
+                using var pen = new Pen(p.Border);
+                e.Graphics.DrawRectangle(pen, e.Bounds.X, e.Bounds.Y, e.Bounds.Width - 1, e.Bounds.Height - 1);
+            }
+        };
+        lv.DrawSubItem += (_, e) =>
+        {
+            // 每列也画背景（双保险，确保列内文字后无白色透出）
+            var selected = (e.ItemState & ListViewItemStates.Selected) != 0;
+            using var b = new SolidBrush(selected ? Color.FromArgb(80, p.Accent) : p.Surface);
+            e.Graphics.FillRectangle(b, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, e.SubItem.Text, lv.Font, e.Bounds, p.Text,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        };
+    }
+
     public static Palette GetPalette(bool dark) => dark
         ? new Palette(
             Color.FromArgb(0x1E, 0x1E, 0x1E),

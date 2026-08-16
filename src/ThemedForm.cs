@@ -91,6 +91,9 @@ public abstract class ThemedForm : Form
                     c.BackColor = Color.Transparent;
                     c.ForeColor = p.Text;
                     break;
+                case FlowLayoutPanel or TableLayoutPanel:
+                    c.BackColor = Color.Transparent;
+                    break;
                 case TextBox t:
                     t.BackColor = p.Surface;
                     t.ForeColor = p.Text;

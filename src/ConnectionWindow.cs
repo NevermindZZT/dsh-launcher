@@ -102,9 +102,121 @@ public sealed class ConnectionWindow : Form
             if (string.IsNullOrWhiteSpace(title)) return;
             SafeUi(() => { if (Text != title) Text = title; });
         };
+
+        // 注入远端文件选择拦截：dsh UI 的「工作区加号」等调起浏览器文件选择器（只能选客户端本地），
+        // 这里拦截 input[type=file].click / showDirectoryPicker → 通知启动器弹远端目录浏览器。
+        const string pickerScript = @"(function(){
+  if (window.__dshRemotePickerInstalled) return;
+  window.__dshRemotePickerInstalled = true;
+  function notify(msg) { window.chrome.webview.postMessage(msg || 'pick-folder'); }
+  function desc(t) {
+    if (!t) return 'null';
+    var cls = '';
+    try { cls = (typeof t.className === 'string' ? t.className : (t.className && t.className.baseVal ? t.className.baseVal : '')).slice(0, 50); } catch(err) {}
+    return t.tagName + (t.type ? '[' + t.type + ']' : '') + (t.id ? '#' + t.id : '') + (cls ? '.' + cls : '');
+  }
+  function fileRelated(e) {
+    var t = e.target;
+    if (t && t.tagName === 'INPUT' && t.type === 'file') return true;
+    // 事件路径（composedPath）里是否有文件 input
+    var path = e.composedPath ? e.composedPath() : [];
+    for (var i = 0; i < path.length; i++) { if (path[i] && path[i].tagName === 'INPUT' && path[i].type === 'file') return true; }
+    // label[for] 关联文件 input
+    var lab = t && t.closest ? t.closest('label[for]') : null;
+    if (lab) {
+      var target = document.getElementById(lab.htmlFor);
+      if (target && target.tagName === 'INPUT' && target.type === 'file') return true;
+    }
+    // 点击元素是文件 input 的兄弟/父级（input 被隐藏，点击 SVG 触发它）
+    var p = t && t.parentElement ? t.parentElement : null;
+    if (p) {
+      if (p.tagName === 'INPUT' && p.type === 'file') return true;
+      for (var j = 0; j < p.children.length; j++) {
+        if (p.children[j].tagName === 'INPUT' && p.children[j].type === 'file') return true;
+      }
+    }
+    return false;
+  }
+  // 精准拦截：dsh 前端发起 host.pickDirectory（打开文件夹的 flow 请求，后端会弹系统对话框）
+  // —— 拦截该 WebSocket 请求（阻止后端在服务器上弹窗），改为弹启动器远端目录浏览器
+  var origSend = WebSocket.prototype.send;
+  WebSocket.prototype.send = function(data) {
+    try {
+      var s = typeof data === 'string' ? data : '[binary]';
+      if (s.indexOf('pickDirectory') >= 0 || s.indexOf('workspace.create') >= 0) {
+        notify('pick-folder');
+        return;
+      }
+      notify('send:' + s.slice(0, 100));
+    } catch(err) {}
+    return origSend.apply(this, arguments);
+  };
+  // 点击层精准拦截：dsh「添加工作区」按钮（aria-label/title 含「添加工作区 / Add workspace」），
+  // 阻止其 flow（远端弹系统对话框无效）→ 弹启动器远端浏览器
+  function matchAddBtn(t) {
+    var b = t && t.closest ? t.closest('button') : null;
+    var guard = 0;
+    while (b && guard++ < 8) {
+      var al = (b.getAttribute('aria-label') || b.title || '');
+      if (al.indexOf('添加工作区') >= 0 || al.indexOf('Add workspace') >= 0) return true;
+      b = b.parentElement && b.parentElement.closest ? b.parentElement.closest('button') : null;
+    }
+    return false;
+  }
+  document.addEventListener('click', function(e) {
+    if (matchAddBtn(e.target)) {
+      e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+      notify('pick-folder');
+      return;
+    }
+  }, true);
+  // 动态创建的 input[type=file]（MutationObserver 兜底）
+  var origClick = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function() {
+    if (this.type === 'file') { notify('pick-folder'); return; }
+    return origClick.apply(this, arguments);
+  };
+  try {
+    var mo = new MutationObserver(function(muts){
+      muts.forEach(function(m){
+        if (m.addedNodes) m.addedNodes.forEach(function(n){
+          if (n.tagName === 'INPUT' && n.type === 'file') {
+            n.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); notify('pick-folder'); }, true);
+          }
+        });
+      });
+    });
+    mo.observe(document, {childList: true, subtree: true});
+  } catch(err) {}
+  if (window.showDirectoryPicker) {
+    window.showDirectoryPicker = function(){ notify('pick-folder'); return new Promise(function(){}); };
+  }
+  if (window.showOpenFilePicker) {
+    window.showOpenFilePicker = function(){ notify('pick-folder'); return new Promise(function(){}); };
+  }
+  if (window.showSaveFilePicker) {
+    window.showSaveFilePicker = function(){ notify('pick-folder'); return new Promise(function(){}); };
+  }
+})();";
+        try { cwv.AddScriptToExecuteOnDocumentCreatedAsync(pickerScript); } catch { }
+        cwv.WebMessageReceived += (_, e) =>
+        {
+            var msg = e.TryGetWebMessageAsString();
+            if (!string.IsNullOrEmpty(msg) && msg.StartsWith("click:") && msg.Length > 60) msg = msg.Substring(0, 60);
+            _conn.AppendLog($"[SSH页面] message: {msg}");
+            if (msg == "pick-folder") SafeUi(OpenRemoteFolder);
+        };
+
         cwv.NavigationCompleted += (_, e) =>
         {
             if (e.IsSuccess) SafeUi(HideLoading);
+            // 诊断：检查文件选择拦截脚本是否注入成功
+            try
+            {
+                cwv.ExecuteScriptAsync("window.__dshRemotePickerInstalled === true ? 'installed' : 'missing'")
+                    .ContinueWith(t => _conn.AppendLog($"[SSH页面] picker interceptor: {t.Result ?? "err"}"));
+            }
+            catch { }
         };
         // WebView2 焦点下快捷键（反射内部 controller）
         try
@@ -173,6 +285,7 @@ public sealed class ConnectionWindow : Form
             case Keys.Control | Keys.Shift | Keys.P: ShowPluginsForm(); return true;
             case Keys.Control | Keys.Shift | Keys.C: OpenPicker(); return true;
             case Keys.Control | Keys.Shift | Keys.Y: _ = SyncFromLocalAsync(); return true;
+            case Keys.Control | Keys.Shift | Keys.O: OpenRemoteFolder(); return true;
             case Keys.Control | Keys.Shift | Keys.Q: Close(); return true;
         }
         return false;
@@ -200,6 +313,57 @@ public sealed class ConnectionWindow : Form
         {
             Activate();
         }
+    }
+
+    /// <summary>Ctrl+Shift+O：远端目录浏览器 → 选服务器路径写入 dsh 工作区 → 刷新页面（无需文件选择器）。</summary>
+    private async void OpenRemoteFolder()
+    {
+        if (_conn is not SshConnection sc)
+        {
+            MessageBox.Show(this, "仅 SSH 远程连接支持此功能。", "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        using var browser = new RemoteFolderBrowserForm(sc.ListRemoteDirectory);
+        if (browser.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(browser.SelectedPath))
+        {
+            ShowLoading($"正在添加工作区 {browser.SelectedPath} …");
+            try
+            {
+                var added = await sc.AddRemoteWorkspaceAsync(browser.SelectedPath, line => SafeUi(() => { _loadingText.Text = line; }));
+                HideLoading();
+                // 让远端 dsh 重新读取工作区（后端有内存缓存，直接改文件不生效）：自动重启远端 dsh，工作区刷新后出现
+                ShowLoading("正在重启远端 dsh 使工作区生效…");
+                try
+                {
+                    var url = await sc.RestartAsync();
+                    NavigateCurrent();
+                    HideLoading();
+                    MessageBox.Show(this, $"已添加远端工作区：{added}\n\n远端 dsh 已重启，工作区已生效。",
+                        "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    HideLoading();
+                    MessageBox.Show(this, $"工作区已写入：{added}\n\n远端重启失败（{ex.Message}），可稍后 Ctrl+Shift+R 手动重启。",
+                        "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                HideLoading();
+                MessageBox.Show(this, ex.Message, "添加工作区失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    /// <summary>重新导航当前 URL（刷新页面）。</summary>
+    private void NavigateCurrent()
+    {
+        try
+        {
+            if (_web.Source != null) _web.Reload();
+        }
+        catch { }
     }
 
     /// <summary>Ctrl+Shift+Y：把本地 dsh 配置与插件同步到本服务器，完成后可选重启远端。</summary>

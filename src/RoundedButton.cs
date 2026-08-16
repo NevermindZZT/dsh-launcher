@@ -55,8 +55,13 @@ public sealed class RoundedButton : Button
         g.FillPath(brush, path);
 
         var textColor = Enabled ? ForeColor : Color.FromArgb(120, ForeColor);
-        TextRenderer.DrawText(g, Text, Font, rect, textColor,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        // 尊重 TextAlign + 左右内边距（文字不贴边）
+        var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix;
+        if (TextAlign == ContentAlignment.MiddleLeft) flags |= TextFormatFlags.Left;
+        else if (TextAlign == ContentAlignment.MiddleRight) flags |= TextFormatFlags.Right;
+        else flags |= TextFormatFlags.HorizontalCenter;
+        var textRect = new Rectangle(rect.X + 12, rect.Y, Math.Max(0, rect.Width - 24), rect.Height);
+        TextRenderer.DrawText(g, Text, Font, textRect, textColor, flags);
     }
 
     public static GraphicsPath RoundedRect(Rectangle r, int radius)

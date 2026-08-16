@@ -323,23 +323,24 @@ public sealed class ConnectionWindow : Form
             MessageBox.Show(this, "仅 SSH 远程连接支持此功能。", "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        using var browser = new RemoteFolderBrowserForm(sc.ListRemoteDirectory);
-        if (browser.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(browser.SelectedPath))
+        // 输入服务器路径（可点「浏览…」用目录浏览器选择），不再强制弹出完整浏览窗口
+        using var input = new RemotePathInputForm(sc.ListRemoteDirectory);
+        if (input.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(input.SelectedPath))
         {
-            ShowLoading($"正在添加工作区 {browser.SelectedPath} …");
+            ShowLoading($"正在添加工作区 {input.SelectedPath} …");
                 HideLoading();
                 // 主路径：dsh RPC workspace.create（后端正常创建，无需重启）；失败降级写文件+自动重启
-                var (rpcOk, rpcErr) = await sc.CreateWorkspaceRpcAsync(browser.SelectedPath, line => SafeUi(() => { _loadingText.Text = line; }));
+                var (rpcOk, rpcErr) = await sc.CreateWorkspaceRpcAsync(input.SelectedPath, line => SafeUi(() => { _loadingText.Text = line; }));
                 if (rpcOk)
                 {
                     NavigateCurrent();
-                    MessageBox.Show(this, $"已添加远端工作区：{browser.SelectedPath}\n\n已通过 dsh RPC 创建，无需重启。",
+                    MessageBox.Show(this, $"已添加远端工作区：{input.SelectedPath}\n\n已通过 dsh RPC 创建，无需重启。",
                         "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
                 // fallback：写入 workspace.json + 自动重启远端使生效
                 ShowLoading($"RPC 失败（{rpcErr}），改用写入配置文件并重启远端…");
-                var added = await sc.AddRemoteWorkspaceAsync(browser.SelectedPath, line => SafeUi(() => { _loadingText.Text = line; }));
+                var added = await sc.AddRemoteWorkspaceAsync(input.SelectedPath, line => SafeUi(() => { _loadingText.Text = line; }));
                 ShowLoading("正在重启远端 dsh 使工作区生效…");
                 try
                 {

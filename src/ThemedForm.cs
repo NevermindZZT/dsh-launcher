@@ -94,6 +94,17 @@ public abstract class ThemedForm : Form
                 case FlowLayoutPanel or TableLayoutPanel:
                     c.BackColor = Color.Transparent;
                     break;
+                case Panel pn when pn.GetType() == typeof(Panel):
+                    c.BackColor = Color.Transparent;
+                    break;
+                case ThemedComboBox tcb:
+                    tcb.Surface = p.Surface;
+                    tcb.Text = p.Text;
+                    tcb.Border = p.Border;
+                    tcb.ButtonColor = p.SurfaceAlt;
+                    tcb.WindowBack = p.WindowBack;
+                    tcb.Invalidate();
+                    break;
                 case TextBox t:
                     t.BackColor = p.Surface;
                     t.ForeColor = p.Text;
@@ -113,6 +124,21 @@ public abstract class ThemedForm : Form
                     n.BackColor = p.Surface;
                     n.ForeColor = p.Text;
                     n.BorderStyle = BorderStyle.FixedSingle;
+                    break;
+                case ComboBox cb:
+                    cb.FlatStyle = FlatStyle.Flat;
+                    cb.BackColor = p.Surface;
+                    cb.ForeColor = p.Text;
+                    cb.DropDownStyle = ComboBoxStyle.DropDownList;
+                    cb.DrawMode = DrawMode.OwnerDrawFixed;
+                    cb.DrawItem += (_, e) =>
+                    {
+                        if (e.Index < 0) return;
+                        using var bg = new SolidBrush(e.State.HasFlag(DrawItemState.Selected) ? Color.FromArgb(80, p.Accent) : p.Surface);
+                        e.Graphics.FillRectangle(bg, e.Bounds);
+                        TextRenderer.DrawText(e.Graphics, cb.Items[e.Index].ToString(), cb.Font, e.Bounds, p.Text,
+                            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                    };
                     break;
                 case InputBox ib:
                     ib.SetWindowBack(p.WindowBack);

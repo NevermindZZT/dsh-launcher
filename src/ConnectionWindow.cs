@@ -100,7 +100,12 @@ public sealed class ConnectionWindow : Form
         {
             var title = cwv.DocumentTitle;
             if (string.IsNullOrWhiteSpace(title)) return;
-            SafeUi(() => { if (Text != title) Text = title; });
+            SafeUi(() =>
+            {
+                // 标题保留远程连接名（区分多服务器），格式：连接名 · 页面标题
+                var combined = $"{_conn.DisplayName} · {title}";
+                if (Text != combined) Text = combined;
+            });
         };
 
         // 注入远端文件选择拦截：dsh UI 的「工作区加号」等调起浏览器文件选择器（只能选客户端本地），

@@ -5,7 +5,7 @@ namespace DshLauncher;
 /// <summary>SSH 连接配置编辑窗口（Win11 风格）。保存后返回新的 SshConnectionConfig。</summary>
 public sealed class SshEditForm : ThemedForm
 {
-    private readonly ComboBox _cmbImport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, Height = 34 };
+    private readonly ThemedComboBox _cmbImport = new() { Width = 260, Height = 40 };
     private readonly RoundedButton _btnImport = new() { Text = "导入", Width = 64, Height = 34 };
     private readonly InputBox _name = new(34) { Width = 240 };
     private readonly InputBox _host = new(34) { Width = 200 };
@@ -31,9 +31,9 @@ public sealed class SshEditForm : ThemedForm
     public SshEditForm(SshConnectionConfig? existing = null)
     {
         Text = existing == null ? "新增 SSH 连接" : "编辑 SSH 连接";
-        Width = 720;
-        Height = 680;
-        MinimumSize = new Size(660, 600);
+        Width = 740;
+        Height = 760;
+        MinimumSize = new Size(680, 680);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -48,11 +48,13 @@ public sealed class SshEditForm : ThemedForm
 
         // 从系统 SSH 配置（~/.ssh/config）读取主机供导入
         var sshHosts = SshConfigParser.ParseHosts();
+        var labels = new List<string>();
         foreach (var h in sshHosts)
         {
             var label = string.IsNullOrEmpty(h.HostName) ? h.Alias : $"{h.Alias} ({h.HostName})";
-            _cmbImport.Items.Add(label);
+            labels.Add(label);
         }
+        _cmbImport.SetItems(labels);
         _cmbImport.Tag = sshHosts;
         _btnImport.Click += (_, _) => ImportHost();
         _password.Inner.PasswordChar = '•';
@@ -269,8 +271,9 @@ public sealed class SshEditForm : ThemedForm
             AuthMethod = _rbKey.Checked ? "key" : "password",
             KeyPath = _keyPath.Inner.Text.Trim(),
             Password = _rbPassword.Checked ? _password.Inner.Text : null,
-            LocalPort = int.TryParse(_localPort.Inner.Text.Trim(), out var lp) && lp > 0 ? lp : 3080,
-            RemotePort = int.TryParse(_remotePort.Inner.Text.Trim(), out var rp) && rp > 0 ? rp : 3080,
+            // 0 = 自动（本地端口自动分配空闲；远端端口自动随机空闲，多用户服务器避免冲突）
+            LocalPort = int.TryParse(_localPort.Inner.Text.Trim(), out var lp) && lp >= 0 ? lp : 0,
+            RemotePort = int.TryParse(_remotePort.Inner.Text.Trim(), out var rp) && rp >= 0 ? rp : 0,
             StopRemoteOnClose = _chkStopOnClose.Checked,
             AutoConnect = _chkAutoConnect.Checked,
         };

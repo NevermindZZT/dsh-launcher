@@ -16,7 +16,7 @@ public sealed class SettingsForm : ThemedForm
     // 连接模式
     private readonly ThemedRadioButton _rbLocalMode = new() { Text = "本地" };
     private readonly ThemedRadioButton _rbSshMode = new() { Text = "SSH 远程" };
-    private readonly ComboBox _cmbSsh = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, Height = 40 };
+    private readonly ThemedComboBox _cmbSsh = new() { Width = 220, Height = 40 };
     private readonly RoundedButton _btnSshAdd = new() { Text = "新增", Width = 72, Height = 40 };
     private readonly RoundedButton _btnSshEdit = new() { Text = "编辑", Width = 72, Height = 40 };
     private readonly RoundedButton _btnSshDel = new() { Text = "删除", Width = 72, Height = 40 };
@@ -58,8 +58,8 @@ public sealed class SettingsForm : ThemedForm
         _dshHome.Text = dshHome;
 
         // SSH 连接列表（多连接；本地连接始终存在）
-        foreach (var c in settings.SshConnections) _cmbSsh.Items.Add(c.Name);
-        if (_cmbSsh.Items.Count > 0) _cmbSsh.SelectedIndex = 0;
+        _cmbSsh.SetItems(settings.SshConnections.Select(c => c.Name));
+        if (_cmbSsh.ItemCount > 0) _cmbSsh.SelectedIndex = 0;
         _btnSshAdd.Click += (_, _) => AddSshConnection();
         _btnSshEdit.Click += (_, _) => EditSshConnection();
         _btnSshDel.Click += (_, _) => DeleteSshConnection();
@@ -174,8 +174,8 @@ public sealed class SettingsForm : ThemedForm
         {
             _settings.SshConnections.Add(dlg.Result);
             _settings.Save(); // 立即持久化（即使设置窗口未点保存）
-            _cmbSsh.Items.Add(dlg.Result.Name);
-            _cmbSsh.SelectedItem = dlg.Result.Name;
+            _cmbSsh.SetItems(_settings.SshConnections.Select(c => c.Name));
+            _cmbSsh.SelectedIndex = _settings.SshConnections.Count - 1;
             _sshStatus.Text = "已添加连接：" + dlg.Result.DisplayName;
         }
     }
@@ -190,7 +190,7 @@ public sealed class SettingsForm : ThemedForm
         {
             _settings.SshConnections[idx] = dlg.Result;
             _settings.Save();
-            _cmbSsh.Items[idx] = dlg.Result.Name;
+            _cmbSsh.SetItems(_settings.SshConnections.Select(c => c.Name));
             _cmbSsh.SelectedIndex = idx;
             _sshStatus.Text = "已更新连接：" + dlg.Result.DisplayName;
         }
@@ -205,8 +205,8 @@ public sealed class SettingsForm : ThemedForm
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         _settings.SshConnections.RemoveAt(idx);
         _settings.Save();
-        _cmbSsh.Items.RemoveAt(idx);
-        if (_cmbSsh.Items.Count > 0) _cmbSsh.SelectedIndex = 0;
+        _cmbSsh.SetItems(_settings.SshConnections.Select(c => c.Name));
+        if (_cmbSsh.ItemCount > 0) _cmbSsh.SelectedIndex = 0;
         _sshStatus.Text = "已删除连接";
     }
 

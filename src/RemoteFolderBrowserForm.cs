@@ -10,11 +10,11 @@ public sealed class RemoteFolderBrowserForm : ThemedForm
     private readonly Func<string, List<string>> _listDirs;
     private string _current = "~";
     private readonly RemoteDirList _dirList = new() { Dock = DockStyle.Fill };
-    private readonly InputBox _pathBox = new(34) { Width = 420 };
-    private readonly RoundedButton _btnUp = new() { Text = "上级", Width = 64, Height = 34 };
-    private readonly RoundedButton _btnHome = new() { Text = "~", Width = 48, Height = 34 };
-    private readonly RoundedButton _btnRoot = new() { Text = "/", Width = 48, Height = 34 };
-    private readonly RoundedButton _btnGo = new() { Text = "跳转", Width = 64, Height = 34 };
+    private readonly InputBox _pathBox = new(40) { Width = 400 };
+    private readonly RoundedButton _btnUp = new() { Text = "上级", Width = 60, Height = 40 };
+    private readonly RoundedButton _btnHome = new() { Text = "~", Width = 44, Height = 40 };
+    private readonly RoundedButton _btnRoot = new() { Text = "/", Width = 44, Height = 40 };
+    private readonly RoundedButton _btnGo = new() { Text = "跳转", Width = 60, Height = 40 };
     private readonly RoundedButton _btnOpen = new() { Text = "选择此目录", Width = 120, Height = 36, DialogResult = DialogResult.OK };
     private readonly RoundedButton _btnCancel = new() { Text = "取消", Width = 96, Height = 36, DialogResult = DialogResult.Cancel };
     private readonly Label _hint = new() { Dock = DockStyle.Top, Height = 32, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(20, 4, 8, 0), Text = "选择服务器上的目录作为 dsh 工作区：" };
@@ -26,9 +26,9 @@ public sealed class RemoteFolderBrowserForm : ThemedForm
     {
         _listDirs = listDirs;
         Text = "打开远端文件夹";
-        Width = 660;
-        Height = 560;
-        MinimumSize = new Size(600, 480);
+        Width = 860;
+        Height = 640;
+        MinimumSize = new Size(780, 540);
         StartPosition = FormStartPosition.CenterParent;
 
         BackColor = Color.FromArgb(0x1E, 0x20, 0x24);

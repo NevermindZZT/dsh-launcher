@@ -23,6 +23,8 @@ jobs:
       - name: Publish single-file exe
         shell: pwsh
         run: |
+          # 移除本地 NuGet 源配置（本地源路径仅开发机存在），使用官方 nuget.org
+          Remove-Item NuGet.config -ErrorAction SilentlyContinue
           dotnet publish src/DshLauncher.csproj -c Release -r win-x64 --self-contained false `
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishTrimmed=false `
             -p:DebugType=None -p:DebugSymbols=false -o release

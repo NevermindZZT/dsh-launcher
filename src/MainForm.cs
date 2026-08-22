@@ -55,6 +55,11 @@ public sealed class MainForm : Form
         _current = _connections.Local;
         Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
         Text = "DeepSeek Harness";
+        // 在窗口句柄/主题初始化前就设置深色背景，避免冷启动首帧出现白条
+        var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
+        BackColor = initialPalette.WindowBack;
+        ForeColor = initialPalette.Text;
+        _web.DefaultBackgroundColor = initialPalette.WindowBack;
         // 默认大小按屏幕工作区自适应（约 92%），不再固定偏小
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1600, 1000);
         Width = Math.Max(1280, (int)(wa.Width * 0.92));
@@ -467,8 +472,8 @@ public sealed class MainForm : Form
         ShowLoading("正在重启宿主…");
         try
         {
-            var url = await _host.RestartAsync();
-            Navigate(url);
+            await _host.RestartAsync();
+            // 导航统一由连接 Ready 事件处理，避免重启后的双导航
         }
         catch (Exception ex)
         {

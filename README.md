@@ -1,6 +1,6 @@
 # DshLauncher — DeepSeek Harness 一键启动器
 
-![Version](https://img.shields.io/badge/version-v0.1.1-blue)
+![Version](https://img.shields.io/badge/version-v0.1.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)

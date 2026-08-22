@@ -28,6 +28,11 @@ public sealed class ConnectionWindow : Form
     {
         _conn = conn;
         Text = conn.DisplayName;
+        // 远程窗口首帧直接使用系统深色背景，避免冷启动白闪
+        var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
+        BackColor = initialPalette.WindowBack;
+        ForeColor = initialPalette.Text;
+        _web.DefaultBackgroundColor = initialPalette.WindowBack;
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1600, 1000);
         Width = Math.Max(1100, (int)(wa.Width * 0.88));
         Height = Math.Max(760, (int)(wa.Height * 0.88));
@@ -349,7 +354,7 @@ public sealed class ConnectionWindow : Form
             {
                 await sc.AddRemoteWorkspaceAsync(path, line => SafeUi(() => { _loadingText.Text = line; }));
                 ShowLoading("正在重启远端 dsh 使工作区生效…");
-                var url = await sc.RestartAsync();
+                await sc.RestartAsync();
                 NavigateCurrent();
                 HideLoading();
             }
@@ -393,8 +398,7 @@ public sealed class ConnectionWindow : Form
                 ShowLoading("正在重启远端 dsh…");
                 try
                 {
-                    var url = await _conn.RestartAsync();
-                    Navigate(url);
+                    await _conn.RestartAsync();
                     HideLoading();
                 }
                 catch (Exception ex)
@@ -418,7 +422,7 @@ public sealed class ConnectionWindow : Form
     private async Task RestartAsync()
     {
         ShowLoading("正在重启…");
-        try { var url = await _conn.RestartAsync(); Navigate(url); HideLoading(); }
+        try { await _conn.RestartAsync(); HideLoading(); }
         catch (Exception ex) { HideLoading(); MessageBox.Show(this, ex.Message, "重启失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 

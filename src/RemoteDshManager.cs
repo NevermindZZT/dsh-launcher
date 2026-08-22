@@ -91,6 +91,7 @@ public static class RemoteDshManager
         <string>web</string>
         <string>--host</string><string>127.0.0.1</string>
         <string>--port</string><string>{remotePort}</string>
+        <string>--no-open</string>
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -127,7 +128,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={node} {dshBin} web --host 127.0.0.1 --port {remotePort}
+ExecStart={node} {dshBin} web --host 127.0.0.1 --port {remotePort} --no-open
 Restart=on-failure
 RestartSec=3
 
@@ -152,7 +153,7 @@ WantedBy=default.target";
 
     private static void StartNohup(SshRunner runner, SshConnectionConfig cfg, int remotePort, string node, string dshBin, Action<string> log)
     {
-        var cmd = $"mkdir -p {NohupDir} && nohup {node} {dshBin} web --host 127.0.0.1 --port {remotePort} > {NohupDir}/dsh-web.log 2>&1 & echo $! > {NohupDir}/dsh.pid && echo nohup-started";
+        var cmd = $"mkdir -p {NohupDir} && nohup {node} {dshBin} web --host 127.0.0.1 --port {remotePort} --no-open > {NohupDir}/dsh-web.log 2>&1 & echo $! > {NohupDir}/dsh.pid && echo nohup-started";
         var result = runner.Exec(cmd);
         if (!result.Contains("nohup-started"))
         {

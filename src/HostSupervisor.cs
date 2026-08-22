@@ -198,7 +198,7 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         }
 
         SetState(HostState.Starting);
-        Log($"spawn: {nodeExe} --expose-internals \"{binJs}\" web --host 127.0.0.1 --port 0");
+        Log($"spawn: {nodeExe} --expose-internals \"{binJs}\" web --host 127.0.0.1 --port 0 --no-open");
 
         var psi = new ProcessStartInfo
         {
@@ -218,6 +218,7 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         psi.ArgumentList.Add("127.0.0.1");
         psi.ArgumentList.Add("--port");
         psi.ArgumentList.Add("0");
+        psi.ArgumentList.Add("--no-open");
 
         _process = Process.Start(psi);
         if (_process == null)

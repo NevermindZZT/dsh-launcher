@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -184,7 +185,7 @@ public sealed class ManagerAgent : IAsyncDisposable
         {
             var connection = _connections.Connections.FirstOrDefault(c => ConnectionManager.IdOf(c) == request.InstanceId);
             if (connection == null || string.IsNullOrWhiteSpace(connection.CurrentUrl)) throw new InvalidOperationException("dsh 实例未运行");
-            using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false };
+            using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.All };
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
             var target = new Uri(new Uri(connection.CurrentUrl.TrimEnd('/') + "/"), request.Path.TrimStart('/'));
             var targetOrigin = target.GetLeftPart(UriPartial.Authority);

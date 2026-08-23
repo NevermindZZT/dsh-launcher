@@ -81,7 +81,7 @@ public sealed class ManagerAgent : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(m.AgentId) && !string.IsNullOrWhiteSpace(m.AgentToken)) return;
         if (string.IsNullOrWhiteSpace(m.PairingCode)) throw new InvalidOperationException("Manager 尚未配置 Agent 配对码");
         using var client = CreateHttpClient();
-        var payload = new { pairingCode = m.PairingCode, name = string.IsNullOrWhiteSpace(m.AgentName) ? Environment.MachineName : m.AgentName, platform = "windows", launcherVersion = VersionHelper.Current };
+        var payload = new { pairingCode = m.PairingCode, name = string.IsNullOrWhiteSpace(m.AgentName) ? Environment.MachineName : m.AgentName, platform = "windows", launcherVersion = VersionHelper.Current, agentType = "launcher", agentVersion = VersionHelper.Current, capabilities = new[] { "command", "proxy.http", "proxy.websocket" } };
         using var response = await client.PostAsJsonAsync(BuildHttpUrl("/api/v1/agents/enroll"), payload, _json, ct);
         var text = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException("Agent 配对失败: " + text);
@@ -100,7 +100,7 @@ public sealed class ManagerAgent : IAsyncDisposable
         var uri = new Uri(BuildWebSocketUrl("/api/v1/agent/connect"));
         await socket.ConnectAsync(uri, ct);
         _log("[Manager] Agent 通道已连接");
-        await SendAsync(socket, new AgentMessage { Type = "register", Instances = Snapshot() }, ct);
+        await SendAsync(socket, new AgentMessage { Type = "register", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = new[] { "command", "proxy.http", "proxy.websocket" }, Instances = Snapshot() }, ct);
         var receive = ReceiveLoopAsync(socket, ct);
         try
         {
@@ -108,7 +108,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             {
                 var completed = await Task.WhenAny(receive, Task.Delay(TimeSpan.FromSeconds(15), ct));
                 if (completed == receive) { await receive; break; }
-                await SendAsync(socket, new AgentMessage { Type = "heartbeat", Instances = Snapshot() }, ct);
+                await SendAsync(socket, new AgentMessage { Type = "heartbeat", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = new[] { "command", "proxy.http", "proxy.websocket" }, Instances = Snapshot() }, ct);
             }
         }
         finally
@@ -334,7 +334,7 @@ public sealed class ManagerAgent : IAsyncDisposable
     }
 
     private sealed class EnrollResponse { public string AgentId { get; set; } = ""; public string AgentToken { get; set; } = ""; }
-    private sealed class AgentMessage { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public bool? OK { get; set; } public string? Error { get; set; } public int Status { get; set; } public Dictionary<string,string>? Headers { get; set; } public string? Body { get; set; } public string FrameType { get; set; } = ""; public List<ManagerInstance>? Instances { get; set; } }
+    private sealed class AgentMessage { public string Type { get; set; } = ""; public string AgentType { get; set; } = ""; public string AgentVersion { get; set; } = ""; public string PluginVersion { get; set; } = ""; public string[]? Capabilities { get; set; } public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public bool? OK { get; set; } public string? Error { get; set; } public int Status { get; set; } public Dictionary<string,string>? Headers { get; set; } public string? Body { get; set; } public string FrameType { get; set; } = ""; public List<ManagerInstance>? Instances { get; set; } }
     private sealed class ManagerCommand { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Action { get; set; } = ""; }
     private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; }
     private sealed class ManagerProxyWebSocketOpen { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Path { get; set; } = "/"; }

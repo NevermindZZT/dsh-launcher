@@ -1,6 +1,6 @@
 # DshLauncher — DeepSeek Harness 一键启动器
 
-![Version](https://img.shields.io/badge/version-v0.2.1-blue)
+![Version](https://img.shields.io/badge/version-v0.2.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)
@@ -27,6 +27,7 @@
 - **SSH 远程（多服务器）**：本地窗口 + 远程 dsh —— 基于系统 OpenSSH，支持密钥 / 密码认证、从 `~/.ssh/config` 导入主机、每个服务器独立窗口
 - **配置与插件同步**：本地 dsh 配置（`settings.yaml` 等）与已装插件一键同步到服务器，不用逐个重装
 - **dsh-manager Agent**：可注册到自托管 Go manager，统一上报本地与 SSH 实例状态，并接受远程启动 / 停止 / 重启 / 同步 / 更新命令
+- **dsh 直连插件**：不使用 launcher 时，可在 dsh 内安装 [dsh-manager-plugin](https://github.com/NevermindZZT/dsh-manager-plugin)，直接建立 manager 反向连接
 - **Agent 通道**：支持 HTTP/WS（可信内网）和 HTTPS/WSS（推荐），HTTPS 可使用自签名证书指纹固定，Agent Token 使用 Windows DPAPI 保护
 - **快捷键**：`Ctrl+Shift+R/L/P/S/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
 

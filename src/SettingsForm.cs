@@ -22,6 +22,12 @@ public sealed class SettingsForm : ThemedForm
     private readonly RoundedButton _btnSshDel = new() { Text = "删除", Width = 72, Height = 40 };
     private readonly RoundedButton _btnSshTest = new() { Text = "测试连接", Width = 108, Height = 40 };
     private readonly Label _sshStatus = new() { AutoSize = true, Tag = "muted" };
+    private readonly ThemedCheckBox _chkManager = new() { Text = "启用 dsh-manager Agent" };
+    private readonly InputBox _managerUrl = new(34);
+    private readonly InputBox _managerName = new(34);
+    private readonly InputBox _managerPairing = new(34);
+    private readonly InputBox _managerFingerprint = new(34);
+    private readonly Label _managerStatus = new() { AutoSize = true, Tag = "muted" };
     private readonly RoundedButton _btnSave = new() { Text = "保存", DialogResult = DialogResult.OK, Width = 96, Height = 36 };
     private readonly RoundedButton _btnCancel = new() { Text = "取消", DialogResult = DialogResult.Cancel, Width = 96, Height = 36 };
 
@@ -30,7 +36,7 @@ public sealed class SettingsForm : ThemedForm
         _settings = settings;
         Text = "设置";
         Width = 840;
-        Height = 820;
+        Height = 1020;
         MinimumSize = new Size(740, 700);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -42,11 +48,11 @@ public sealed class SettingsForm : ThemedForm
             ColumnCount = 2,
             Padding = new Padding(44, 40, 44, 20),
             AutoSize = false,
-            RowCount = 9,
+            RowCount = 14,
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 9; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 14; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _port.Inner.Text = settings.AttachPort > 0 ? settings.AttachPort.ToString() : "0";
         _cwd.Inner.Text = settings.WorkingDirectory ?? "";
@@ -56,6 +62,12 @@ public sealed class SettingsForm : ThemedForm
         var dshHome = Environment.GetEnvironmentVariable("DSH_HOME")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
         _dshHome.Text = dshHome;
+        _chkManager.Checked = settings.Manager.Enabled;
+        _managerUrl.Inner.Text = settings.Manager.ServerUrl;
+        _managerName.Inner.Text = settings.Manager.AgentName;
+        _managerPairing.Inner.Text = settings.Manager.PairingCode;
+        _managerFingerprint.Inner.Text = settings.Manager.ServerCertificateFingerprint;
+        _managerStatus.Text = string.IsNullOrWhiteSpace(settings.Manager.AgentId) ? "尚未配对" : "已配对：" + settings.Manager.AgentId;
 
         // SSH 连接列表（多连接；本地连接始终存在）
         _cmbSsh.SetItems(settings.SshConnections.Select(c => c.Name));
@@ -116,6 +128,20 @@ public sealed class SettingsForm : ThemedForm
         panel.Controls.Add(MkLabel(""), 0, row);
         panel.Controls.Add(_sshStatus, 1, row);
         row++;
+        // dsh-manager Agent
+        panel.Controls.Add(MkLabel("dsh-manager"), 0, row);
+        panel.Controls.Add(_chkManager, 1, row); row++;
+        panel.Controls.Add(MkLabel("服务器地址（HTTPS）"), 0, row);
+        panel.Controls.Add(_managerUrl, 1, row); row++;
+        panel.Controls.Add(MkLabel("Agent 名称"), 0, row);
+        panel.Controls.Add(_managerName, 1, row); row++;
+        panel.Controls.Add(MkLabel("配对码"), 0, row);
+        panel.Controls.Add(_managerPairing, 1, row); row++;
+        panel.Controls.Add(MkLabel("TLS 指纹（64 位 SHA-256）"), 0, row);
+        panel.Controls.Add(_managerFingerprint, 1, row); row++;
+        panel.Controls.Add(MkLabel("连接状态"), 0, row);
+        panel.Controls.Add(_managerStatus, 1, row); row++;
+
         // 版本（最后一项）
         panel.Controls.Add(MkLabel("版本"), 0, row);
         panel.Controls.Add(MkLabel(VersionHelper.Current), 1, row);
@@ -159,10 +185,29 @@ public sealed class SettingsForm : ThemedForm
     /// <summary>保存设置到 settings 对象并持久化。DialogResult.OK 时调用。</summary>
     public void Apply()
     {
+        var oldManagerUrl = _settings.Manager.ServerUrl;
+        var oldManagerFingerprint = _settings.Manager.ServerCertificateFingerprint;
         _settings.AttachPort = int.TryParse(_port.Inner.Text.Trim(), out var port) ? port : 0;
         _settings.WorkingDirectory = string.IsNullOrWhiteSpace(_cwd.Inner.Text) ? null : _cwd.Inner.Text.Trim();
         _settings.CloseExits = _rbExit.Checked;
         _settings.AutoStart = _chkAutoStart.Checked;
+        _settings.Manager.Enabled = _chkManager.Checked;
+        _settings.Manager.ServerUrl = _managerUrl.Inner.Text.Trim();
+        _settings.Manager.AgentName = _managerName.Inner.Text.Trim();
+        _settings.Manager.PairingCode = _managerPairing.Inner.Text.Trim();
+        _settings.Manager.ServerCertificateFingerprint = _managerFingerprint.Inner.Text.Trim();
+        if (!string.IsNullOrWhiteSpace(_settings.Manager.PairingCode))
+        {
+            // 填入新配对码表示用户明确要求重新配对，清除旧 Agent 凭证。
+            _settings.Manager.AgentId = "";
+            _settings.Manager.AgentToken = "";
+        }
+        if (!string.Equals(oldManagerUrl, _settings.Manager.ServerUrl, StringComparison.OrdinalIgnoreCase) || !string.Equals(oldManagerFingerprint, _settings.Manager.ServerCertificateFingerprint, StringComparison.OrdinalIgnoreCase))
+        {
+            _settings.Manager.AgentId = "";
+            _settings.Manager.AgentToken = "";
+            _managerStatus.Text = "服务器或指纹已变更，请重新配对";
+        }
         _settings.Save();
         _settings.ApplyAutoStart();
     }

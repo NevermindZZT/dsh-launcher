@@ -19,6 +19,7 @@ public sealed class MainForm : Form
     private readonly AppSettings _settings = AppSettings.Load();
     // 连接抽象：本地（HostSupervisor）或 SSH 远端（SshConnection），构造时按设置创建
     private readonly ConnectionManager _connections = new();
+    private readonly ManagerAgent _managerAgent;
     private IDshConnection _current = null!;
 
     private readonly List<ConnectionWindow> _remoteWindows = new();
@@ -52,6 +53,7 @@ public sealed class MainForm : Form
     {
         Diag.Log("MainForm ctor start");
         _connections.BuildFrom(_settings);
+        _managerAgent = new ManagerAgent(_settings, _connections, line => Diag.Log(line));
         _current = _connections.Local;
         Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
         Text = "DeepSeek Harness";
@@ -324,6 +326,7 @@ public sealed class MainForm : Form
             // 远程 SSH 连接不自动打开 —— 按需用 Ctrl+Shift+C 选择器或托盘菜单连接。
             _current = _connections.Local;
             await _current.StartAsync();
+            _ = _managerAgent.StartAsync();
 
             // 启动后异步检查 dsh 更新
             _ = CheckForUpdateAsync();
@@ -559,6 +562,7 @@ public sealed class MainForm : Form
             dlg.Apply();
             // 同步连接列表（复用运行中实例，新增/删除的服务器生效）
             _connections.SyncFrom(_settings);
+            _ = _managerAgent.RestartAsync();
             // 本地连接特有设置
             if (_host is HostSupervisor hs)
             {
@@ -711,6 +715,7 @@ public sealed class MainForm : Form
             _quitting = true;
             _tray.Visible = false;
             foreach (var c in _connections.Connections) { try { c.StopAsync().GetAwaiter().GetResult(); } catch { } }
+            try { _managerAgent.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
             Application.Exit();
         }
         else
@@ -735,6 +740,7 @@ public sealed class MainForm : Form
         _quitting = true;
         _tray.Visible = false;
         foreach (var c in _connections.Connections) { try { await c.StopAsync(); } catch { } }
+        try { await _managerAgent.DisposeAsync(); } catch { }
         Application.Exit();
     }
 

@@ -1,6 +1,6 @@
 # DshLauncher — DeepSeek Harness 一键启动器
 
-![Version](https://img.shields.io/badge/version-v0.1.2-blue)
+![Version](https://img.shields.io/badge/version-v0.2.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)
@@ -26,6 +26,8 @@
 - **插件管理**：可视化安装 / 卸载 / 更新插件，无需终端
 - **SSH 远程（多服务器）**：本地窗口 + 远程 dsh —— 基于系统 OpenSSH，支持密钥 / 密码认证、从 `~/.ssh/config` 导入主机、每个服务器独立窗口
 - **配置与插件同步**：本地 dsh 配置（`settings.yaml` 等）与已装插件一键同步到服务器，不用逐个重装
+- **dsh-manager Agent**：可注册到自托管 Go manager，统一上报本地与 SSH 实例状态，并接受远程启动 / 停止 / 重启 / 同步 / 更新命令
+- **Agent 通道**：支持 HTTP/WS（可信内网）和 HTTPS/WSS（推荐），HTTPS 可使用自签名证书指纹固定，Agent Token 使用 Windows DPAPI 保护
 - **快捷键**：`Ctrl+Shift+R/L/P/S/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
 
 ## 类似项目对比
@@ -62,7 +64,19 @@
 5. **同步**：SSH 窗口按 `Ctrl+Shift+Y`，把本地配置（`settings.yaml` 等）与已装插件同步到服务器，完成后可选重启远端生效
 6. **打开远端文件夹**：SSH 窗口按 `Ctrl+Shift+O`（或直接点 dsh UI 的「工作区 +」按钮，会被自动拦截）→ 弹出服务器目录浏览器 → 选择目录即添加到远端 dsh 工作区 → 刷新后即可打开
 
-### 4. 快捷键
+### 4. dsh-manager 远程管理
+
+1. 在服务器运行 dsh-manager，默认 HTTP 管理端口为 `8080`，Agent HTTPS/WSS 端口为 `8443`；
+2. 打开启动器设置，启用「dsh-manager Agent」；
+3. 可信内网可填写 `http://manager.example.com:8080`；公网建议填写 `https://manager.example.com:8443`；
+4. HTTPS 模式下从 manager 启动日志复制服务器 SHA-256 指纹；
+5. 填写 Agent 名称、一次性配对码；HTTPS 模式还要填写 TLS 指纹；
+6. 保存并重启启动器，launcher 会自动注册并保持 Agent 长连接；
+7. manager 通过 `/api/v1/instances/{agentId}/{instanceId}/commands` 可以下发 `start`、`stop`、`restart`、`sync`、`update` 命令。
+
+Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文写入 launcher 设置文件。manager Dashboard 已支持通过浏览器会话打开指定实例的原生 dsh Web UI，并转发普通 HTTP 与 WebSocket 会话。
+
+### 5. 快捷键
 
 | 快捷键 | 功能 |
 |---|---|
@@ -77,10 +91,15 @@
 
 ## 构建
 
+本项目独立仓库：
+
+- launcher：[github.com/NevermindZZT/dsh-launcher](https://github.com/NevermindZZT/dsh-launcher)
+- manager：[github.com/NevermindZZT/dsh-manager](https://github.com/NevermindZZT/dsh-manager)
+
 需要 .NET 8 SDK（Windows）：
 
 ```powershell
-git clone https://github.com/<your-name>/dsh-launcher
+git clone https://github.com/NevermindZZT/dsh-launcher
 cd dsh-launcher
 .publish-single.ps1    # 产出 distDshLauncher.exe 单文件
 ```

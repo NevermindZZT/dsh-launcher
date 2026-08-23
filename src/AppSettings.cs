@@ -5,6 +5,7 @@ namespace DshLauncher;
 /// <summary>启动器设置，JSON 持久化到 %LOCALAPPDATA%\DshLauncher\settings.json。</summary>
 public sealed class AppSettings
 {
+    public ManagerSettings Manager { get; set; } = new();
     public int AttachPort { get; set; } = HostSupervisor.DefaultPort;
     public string? WorkingDirectory { get; set; }
     /// <summary>true = 关闭窗口即停止宿主退出；false = 关闭隐藏到托盘（默认）。</summary>

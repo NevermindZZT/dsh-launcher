@@ -1,11 +1,11 @@
 $ErrorActionPreference = 'Stop'
-$dotnet = 'D:\code\dsh-launcher\.tools\dotnet\dotnet.exe'
+$dotnet = 'D:\code\dsh-launcher\dsh-launcher\.tools\dotnet\dotnet.exe'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_NOLOGO = '1'
-$env:NUGET_PACKAGES = 'D:\code\dsh-launcher\.tools\packages'
-$out = 'D:\code\dsh-launcher\dist'
+$env:NUGET_PACKAGES = 'D:\code\dsh-launcher\dsh-launcher\.tools\packages'
+$out = 'D:\code\dsh-launcher\dsh-launcher\dist'
 if (Test-Path $out) { Remove-Item $out -Recurse -Force }
-& $dotnet publish 'D:\code\dsh-launcher\src\DshLauncher.csproj' -c Release -r win-x64 --self-contained false `
+& $dotnet publish 'D:\code\dsh-launcher\dsh-launcher\src\DshLauncher.csproj' -c Release -r win-x64 --self-contained false `
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishTrimmed=false `
     -p:DebugType=None -p:DebugSymbols=false -o $out
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

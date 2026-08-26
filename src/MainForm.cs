@@ -113,7 +113,7 @@ public sealed class MainForm : Form
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("日志  (Ctrl+Shift+L)", null, (_, _) => ShowLogForm());
         trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowPluginsForm());
-        trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowSettingsForm());
+        trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowWebModal("settings"));
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("更新 dsh…", null, (_, _) => _ = UpdateDshAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
@@ -365,6 +365,7 @@ public sealed class MainForm : Form
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+         await WebModalRouter.Install(_web);
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
@@ -372,12 +373,12 @@ public sealed class MainForm : Form
             {
                 switch (action)
                 {
-                    case "settings": ShowSettingsForm(); break;
+                    case "settings": ShowWebModal("settings"); break;
                     case "logs": ShowLogForm(); break;
                     case "plugins": ShowPluginsForm(); break;
                     case "ssh": ShowConnectionPicker(); break;
                     case "restart": _ = RestartHostAsync(); break;
-                    case "about": MessageBox.Show(this, "DshLauncher\n\nDeepSeek Harness 启动器", "关于", MessageBoxButtons.OK, MessageBoxIcon.Information); break;
+                    case "about": ShowWebModal("about"); break;
                 }
             });
         };
@@ -536,7 +537,7 @@ public sealed class MainForm : Form
             case Keys.Control | Keys.Shift | Keys.R: _ = RestartHostAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.L: ShowLogForm(); return true;
             case Keys.Control | Keys.Shift | Keys.P: ShowPluginsForm(); return true;
-            case Keys.Control | Keys.Shift | Keys.S: ShowSettingsForm(); return true;
+            case Keys.Control | Keys.Shift | Keys.S: ShowWebModal("settings"); return true;
             case Keys.Control | Keys.Shift | Keys.Q: OnQuit(); return true;
             case Keys.Control | Keys.Shift | Keys.C: ShowConnectionPicker(); return true;
         }
@@ -585,6 +586,8 @@ public sealed class MainForm : Form
             _pluginsForm.Activate();
         }
     }
+
+    private void ShowWebModal(string page) => WebModalRouter.Open(_web, _settings, page);
 
     /// <summary>打开设置窗口；保存后把设置应用到宿主。</summary>
     private void ShowSettingsForm()

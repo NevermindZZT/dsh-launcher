@@ -33,6 +33,15 @@
 5. 将设置、关于菜单和快捷键切换到 Web 弹窗；
 6. 暂时保留 SettingsForm 作为回退代码，但移除主入口调用。
 
+
+
+### 阶段二进度（已实现）
+
+- 已新增 `WebModalRouter`：在现有 dsh WebView2 页面内注入共享 Modal Router。
+- 设置入口已切换为 Web Modal，包含常规、Manager Agent、SSH 摘要、关于分类；保存继续复用 `AppSettings`、`ManagerSettings`、`ManagerAgent` 和连接同步逻辑。
+- Web 菜单与 Ctrl+Shift+S 不再调用 `SettingsForm`；原生 `SettingsForm` 保留作为回退代码。
+- 日志、插件、SSH 编辑/连接窗口仍保留原生入口，按阶段计划暂不迁移。
+
 ## 阶段三：日志与插件管理 Web 化
 
 1. 将 LogForm 改为 Web 日志弹窗；

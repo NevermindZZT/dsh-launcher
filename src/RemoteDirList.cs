@@ -22,7 +22,7 @@ public sealed class RemoteDirList : Control
 
     /// <summary>配色（由表单设置，跟随主题）。</summary>
     public Color Surface { get; set; } = Color.FromArgb(0x22, 0x24, 0x28);
-    public Color Text { get; set; } = Color.FromArgb(0xE0, 0xE0, 0xE0);
+    public new Color Text { get; set; } = Color.FromArgb(0xE0, 0xE0, 0xE0);
     public Color Accent { get; set; } = Color.FromArgb(0x3B, 0x82, 0xF6);
     public Color Scrollbar { get; set; } = Color.FromArgb(0x4A, 0x4D, 0x52);
 

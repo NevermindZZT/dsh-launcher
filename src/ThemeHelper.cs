@@ -104,7 +104,7 @@ public static class ThemeHelper
             var selected = (e.ItemState & ListViewItemStates.Selected) != 0;
             using var b = new SolidBrush(selected ? Color.FromArgb(80, p.Accent) : p.Surface);
             e.Graphics.FillRectangle(b, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, e.SubItem.Text, lv.Font, e.Bounds, p.Text,
+            TextRenderer.DrawText(e.Graphics, e.SubItem?.Text ?? string.Empty, lv.Font, e.Bounds, p.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         };
     }

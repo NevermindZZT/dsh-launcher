@@ -346,7 +346,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
             return (false, ex.Message);
         }
     }
-    public async Task<string> AddRemoteWorkspaceAsync(string path, Action<string>? onOutput = null, CancellationToken ct = default)
+    public Task<string> AddRemoteWorkspaceAsync(string path, Action<string>? onOutput = null, CancellationToken ct = default)
     {
         if (_tunnel == null) throw new InvalidOperationException("SSH 未连接");
         var dshHome = _runner.Exec("echo ${DSH_HOME:-$HOME/.dsh}", 30).Trim();
@@ -366,7 +366,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
             if (kv.Value?["path"]?.GetValue<string>() == path)
             {
                 onOutput?.Invoke($"工作区已存在: {path}");
-                return path;
+                return Task.FromResult(path);
             }
         }
 
@@ -401,7 +401,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
         var r = _runner.Exec(cmd, 60);
         if (!r.Contains("ok")) throw new InvalidOperationException("写入工作区失败: " + r.Trim().Replace("\n", " "));
         onOutput?.Invoke($"已添加远端工作区: {path} ({title})");
-        return path;
+        return Task.FromResult(path);
     }
     public async Task<string> SyncFromLocalAsync(Action<string>? onOutput = null, CancellationToken ct = default)
     {
@@ -470,7 +470,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
         return _runner.ExecAsync(cmd, onOutput, line => onOutput?.Invoke("[err] " + line), ct);
     }
 
-    public async Task<string?> GetInstalledVersionAsync()
+    public Task<string?> GetInstalledVersionAsync()
     {
         try
         {
@@ -487,7 +487,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
                     if (!string.IsNullOrEmpty(first) && !first.StartsWith("["))
                     {
                         Log($"远端 dsh 版本: {first} ({dshBin})");
-                        return first;
+                        return Task.FromResult<string?>(first);
                     }
                     Log($"dsh bin 存在但版本探测失败: [{r.Trim()}]");
                 }
@@ -495,11 +495,11 @@ public sealed class SshConnection : IDshConnection, IDisposable
             // 方式二：dsh 在 PATH
             var r2 = _runner.Exec("dsh --version 2>/dev/null || echo", 30);
             var first2 = r2.Trim().Split('\n')[0].Trim();
-            if (string.IsNullOrEmpty(first2) || first2.StartsWith("[")) return null;
+            if (string.IsNullOrEmpty(first2) || first2.StartsWith("[")) return Task.FromResult<string?>(null);
             Log($"远端 dsh 版本(PATH): {first2}");
-            return first2;
+            return Task.FromResult<string?>(first2);
         }
-        catch (Exception ex) { Log("版本探测异常: " + ex.Message); return null; }
+        catch (Exception ex) { Log("版本探测异常: " + ex.Message); return Task.FromResult<string?>(null); }
     }
 
     private bool FileExistsRemote(string path)

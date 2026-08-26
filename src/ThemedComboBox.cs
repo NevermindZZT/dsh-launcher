@@ -15,7 +15,7 @@ public sealed class ThemedComboBox : Control
     private readonly Panel _btn = new() { Cursor = Cursors.Hand };
 
     public Color Surface { get; set; } = Color.FromArgb(0x2D, 0x2D, 0x30);
-    public Color Text { get; set; } = Color.FromArgb(0xF0, 0xF0, 0xF0);
+    public new Color Text { get; set; } = Color.FromArgb(0xF0, 0xF0, 0xF0);
     public Color Border { get; set; } = Color.FromArgb(0x3F, 0x3F, 0x46);
     public Color ButtonColor { get; set; } = Color.FromArgb(0x25, 0x25, 0x26);
     public Color WindowBack { get; set; } = Color.FromArgb(0x1E, 0x1E, 0x1E);

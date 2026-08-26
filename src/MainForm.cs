@@ -14,7 +14,7 @@ namespace DshLauncher;
 /// </summary>
 public sealed class MainForm : Form
 {
-    private readonly WebView2 _web = new();
+    private readonly ShellWebView _web = new();
     private readonly NotifyIcon _tray;
     private readonly AppSettings _settings = AppSettings.Load();
     // 连接抽象：本地（HostSupervisor）或 SSH 远端（SshConnection），构造时按设置创建
@@ -57,6 +57,8 @@ public sealed class MainForm : Form
         _current = _connections.Local;
         Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
         Text = "DeepSeek Harness";
+        FormBorderStyle = FormBorderStyle.None;
+        Resize += (_, _) => WebShellBridge.ApplyShape(this);
         // 在窗口句柄/主题初始化前就设置深色背景，避免冷启动首帧出现白条
         var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
         BackColor = initialPalette.WindowBack;
@@ -88,6 +90,8 @@ public sealed class MainForm : Form
             _loadingText.Height = 36;
         };
         Controls.Add(_loadingOverlay);
+        WebShellBridge.InstallResizeGrips(this);
+        WebShellBridge.InstallTitleDragSurface(this);
 
         // 托盘：全部控制入口
         _tray = new NotifyIcon
@@ -356,10 +360,27 @@ public sealed class MainForm : Form
         var env = await CoreWebView2Environment.CreateAsync(null, userData, envOptions);
         await _web.EnsureCoreWebView2Async(env);
 
-        var cwv = _web.CoreWebView2;
+        var cwv = _web.CoreWebView2 ?? throw new InvalidOperationException("WebView2 初始化失败");
         cwv.Settings.AreDefaultContextMenusEnabled = true;
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+        cwv.WebMessageReceived += (_, e) =>
+        {
+            var raw = e.TryGetWebMessageAsString();
+            WebShellBridge.TryHandleWindowCommand(this, raw, action =>
+            {
+                switch (action)
+                {
+                    case "settings": ShowSettingsForm(); break;
+                    case "logs": ShowLogForm(); break;
+                    case "plugins": ShowPluginsForm(); break;
+                    case "ssh": ShowConnectionPicker(); break;
+                    case "restart": _ = RestartHostAsync(); break;
+                    case "about": MessageBox.Show(this, "DshLauncher\n\nDeepSeek Harness 启动器", "关于", MessageBoxButtons.OK, MessageBoxIcon.Information); break;
+                }
+            });
+        };
         // 深色背景防加载白闪（与 dsh 深色 UI 一致）
         _web.DefaultBackgroundColor = Color.FromArgb(18, 20, 24);
         cwv.NavigationStarting += OnNavigationStarting;
@@ -489,6 +510,18 @@ public sealed class MainForm : Form
     /// 快捷键（Ctrl+Shift 组合，避免与 dsh Web UI / 浏览器冲突）：
     /// Ctrl+Shift+R 重启 / Ctrl+Shift+L 日志 / Ctrl+Shift+P 插件 / Ctrl+Shift+S 设置 / Ctrl+Shift+Q 退出 / Ctrl+Shift+C 连接切换（SSH 模式）。
     /// </summary>
+    internal void SetWorkAreaMaximizedBounds(Rectangle bounds) => MaximizedBounds = bounds;
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x84)
+        {
+            var hit = WebShellBridge.ResizeHitTest(this, PointToClient(Cursor.Position));
+            if (hit != 0) { m.Result = (IntPtr)hit; return; }
+        }
+        base.WndProc(ref m);
+    }
+
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if (HandleShortcut(keyData)) return true;

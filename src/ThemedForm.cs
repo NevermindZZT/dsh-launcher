@@ -136,7 +136,7 @@ public abstract class ThemedForm : Form
                         if (e.Index < 0) return;
                         using var bg = new SolidBrush(e.State.HasFlag(DrawItemState.Selected) ? Color.FromArgb(80, p.Accent) : p.Surface);
                         e.Graphics.FillRectangle(bg, e.Bounds);
-                        TextRenderer.DrawText(e.Graphics, cb.Items[e.Index].ToString(), cb.Font, e.Bounds, p.Text,
+                        TextRenderer.DrawText(e.Graphics, cb.Items[e.Index]?.ToString() ?? string.Empty, cb.Font, e.Bounds, p.Text,
                             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
                     };
                     break;

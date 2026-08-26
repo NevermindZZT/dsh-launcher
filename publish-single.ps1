@@ -4,7 +4,28 @@ $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_NOLOGO = '1'
 $env:NUGET_PACKAGES = 'D:\code\dsh-launcher\dsh-launcher\.tools\packages'
 $out = 'D:\code\dsh-launcher\dsh-launcher\dist'
-if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+$running = Get-Process -Name "DshLauncher" -ErrorAction SilentlyContinue
+if ($running) {
+    Write-Host "正在关闭占用发布文件的 DshLauncher.exe..."
+    $running | Stop-Process -Force
+    Start-Sleep -Milliseconds 500
+}
+if (Test-Path $out) {
+    $removed = $false
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Remove-Item $out -Recurse -Force -ErrorAction Stop
+            $removed = $true
+            break
+        }
+        catch {
+            if ($attempt -eq 5) {
+                throw "无法清理发布目录，文件可能仍被其他进程占用: $out"
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
 & $dotnet publish 'D:\code\dsh-launcher\dsh-launcher\src\DshLauncher.csproj' -c Release -r win-x64 --self-contained false `
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishTrimmed=false `
     -p:DebugType=None -p:DebugSymbols=false -o $out

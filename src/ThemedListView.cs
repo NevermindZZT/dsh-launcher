@@ -26,7 +26,7 @@ public sealed class ThemedListView : Control
     /// <summary>配色（跟随主题）。</summary>
     public Color Surface { get; set; } = Color.FromArgb(0x2D, 0x2D, 0x30);
     public Color SurfaceAlt { get; set; } = Color.FromArgb(0x25, 0x25, 0x26);
-    public Color Text { get; set; } = Color.FromArgb(0xF0, 0xF0, 0xF0);
+    public new Color Text { get; set; } = Color.FromArgb(0xF0, 0xF0, 0xF0);
     public Color Accent { get; set; } = Color.FromArgb(0x4C, 0xC2, 0xFF);
     public Color Scrollbar { get; set; } = Color.FromArgb(0x4A, 0x4D, 0x52);
 

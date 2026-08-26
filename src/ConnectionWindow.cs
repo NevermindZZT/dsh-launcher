@@ -11,7 +11,7 @@ namespace DshLauncher;
 public sealed class ConnectionWindow : Form
 {
     private readonly IDshConnection _conn;
-    private readonly WebView2 _web = new();
+    private readonly ShellWebView _web = new();
     private readonly Panel _loadingOverlay = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 20, 24), Visible = true };
     private readonly LoadingSpinner _spinner = new() { Size = new Size(56, 56) };
     private readonly Label _loadingText = new()
@@ -28,6 +28,8 @@ public sealed class ConnectionWindow : Form
     {
         _conn = conn;
         Text = conn.DisplayName;
+        FormBorderStyle = FormBorderStyle.None;
+        Resize += (_, _) => WebShellBridge.ApplyShape(this);
         // 远程窗口首帧直接使用系统深色背景，避免冷启动白闪
         var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
         BackColor = initialPalette.WindowBack;
@@ -56,6 +58,8 @@ public sealed class ConnectionWindow : Form
             _loadingText.Height = 36;
         };
         Controls.Add(_loadingOverlay);
+        WebShellBridge.InstallResizeGrips(this);
+        WebShellBridge.InstallTitleDragSurface(this);
 
         FormClosing += (_, _) =>
         {
@@ -100,6 +104,23 @@ public sealed class ConnectionWindow : Form
         cwv.Settings.AreDefaultContextMenusEnabled = true;
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+        cwv.WebMessageReceived += (_, e) =>
+        {
+            var raw = e.TryGetWebMessageAsString();
+            WebShellBridge.TryHandleWindowCommand(this, raw, action =>
+            {
+                switch (action)
+                {
+                    case "settings": MessageBox.Show(this, "SSH 窗口设置将在下一阶段迁移为 Web 弹窗。", "设置", MessageBoxButtons.OK, MessageBoxIcon.Information); break;
+                    case "logs": ShowLogForm(); break;
+                    case "plugins": ShowPluginsForm(); break;
+                    case "ssh": break;
+                    case "restart": _ = RestartAsync(); break;
+                    case "about": MessageBox.Show(this, "DshLauncher\n\n" + _conn.DisplayName, "关于", MessageBoxButtons.OK, MessageBoxIcon.Information); break;
+                }
+            });
+        };
         _web.DefaultBackgroundColor = Color.FromArgb(18, 20, 24);
         cwv.DocumentTitleChanged += (_, _) =>
         {
@@ -208,7 +229,7 @@ public sealed class ConnectionWindow : Form
     window.showSaveFilePicker = function(){ notify('pick-folder'); return new Promise(function(){}); };
   }
 })();";
-        try { cwv.AddScriptToExecuteOnDocumentCreatedAsync(pickerScript); } catch { }
+        try { await cwv.AddScriptToExecuteOnDocumentCreatedAsync(pickerScript); } catch { }
         cwv.WebMessageReceived += (_, e) =>
         {
             var msg = e.TryGetWebMessageAsString();
@@ -223,7 +244,7 @@ public sealed class ConnectionWindow : Form
             // 诊断：检查文件选择拦截脚本是否注入成功
             try
             {
-                cwv.ExecuteScriptAsync("window.__dshRemotePickerInstalled === true ? 'installed' : 'missing'")
+                _ = cwv.ExecuteScriptAsync("window.__dshRemotePickerInstalled === true ? 'installed' : 'missing'")
                     .ContinueWith(t => _conn.AppendLog($"[SSH页面] picker interceptor: {t.Result ?? "err"}"));
             }
             catch { }
@@ -280,6 +301,18 @@ public sealed class ConnectionWindow : Form
     }
 
     // ── 快捷键（作用于本窗口连接）──
+    internal void SetWorkAreaMaximizedBounds(Rectangle bounds) => MaximizedBounds = bounds;
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x84)
+        {
+            var hit = WebShellBridge.ResizeHitTest(this, PointToClient(Cursor.Position));
+            if (hit != 0) { m.Result = (IntPtr)hit; return; }
+        }
+        base.WndProc(ref m);
+    }
+
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if (HandleShortcut(keyData)) return true;

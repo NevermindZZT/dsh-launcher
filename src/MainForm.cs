@@ -211,10 +211,10 @@ public sealed class MainForm : Form
             win.Activate();
             return;
         }
-        win = new ConnectionWindow(conn);
+        win = new ConnectionWindow(conn, this);
         _remoteWindows.Add(win);
         win.FormClosed += (_, _) => _remoteWindows.Remove(win);
-        win.Show(this);
+        win.Show();
     }
 
     /// <summary>Ctrl+Shift+C：循环激活 SSH 连接窗口（再次按下回到主窗口）。</summary>
@@ -362,9 +362,50 @@ public sealed class MainForm : Form
                 if (action == "logs.clear") { try { File.WriteAllText(_host.LogFile, string.Empty); } catch { } ShowWebModal("logs", new { page="logs", history=string.Empty }); return; }
                 if (action == "plugins.open" || action == "plugins.list") { ShowPluginsModal(); return; }
                 if (action.StartsWith("plugins.") && payload.ValueKind == JsonValueKind.Object) { var pkg=payload.TryGetProperty("package",out var q)?q.GetString():null; var verb=action[9..]; if (verb=="install"&&!string.IsNullOrWhiteSpace(pkg)) _=_host.RunPluginAsync(new[]{"add",pkg},x=>_host.AppendLog(x)); else if (verb=="remove"&&!string.IsNullOrWhiteSpace(pkg)) _=_host.RunPluginAsync(new[]{"remove",pkg},x=>_host.AppendLog(x)); else if (verb=="update") _=_host.RunPluginAsync(string.IsNullOrWhiteSpace(pkg)?new[]{"update"}:new[]{"update",pkg},x=>_host.AppendLog(x)); return; }
-                if (action == "ssh.add" || action == "ssh.edit") { try { var cfg=JsonSerializer.Deserialize<SshConnectionConfig>(payload.GetRawText()); if(cfg!=null&&!string.IsNullOrWhiteSpace(cfg.Host)&&!string.IsNullOrWhiteSpace(cfg.User)){ var old=_settings.SshConnections.FirstOrDefault(x=>x.Name==cfg.Name); if(old!=null) _settings.SshConnections.Remove(old); _settings.SshConnections.Add(cfg); _settings.Save(); _connections.SyncFrom(_settings); WebModalRouter.Open(_web,"ssh",new {page="ssh",ssh=_settings.SshConnections}); } } catch { } return; }
-                if (action == "ssh.delete") { var name=payload.TryGetProperty("name",out var n)?n.GetString():null; if(!string.IsNullOrWhiteSpace(name)){_settings.SshConnections.RemoveAll(x=>x.Name==name);_settings.Save();_connections.SyncFrom(_settings);WebModalRouter.Open(_web,"ssh",new {page="ssh",ssh=_settings.SshConnections});} return; }
-                if (action == "ssh.connect") { var name=payload.TryGetProperty("name",out var n)?n.GetString():null; var c=_connections.Connections.OfType<SshConnection>().FirstOrDefault(x=>x.Config.Name==name); if(c!=null) ShowOrOpenRemoteWindow(c); return; }
+                if (action == "ssh.form")
+                {
+                    var name = payload.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    var cfg = string.IsNullOrWhiteSpace(name)
+                        ? new SshConnectionConfig()
+                        : _settings.SshConnections.FirstOrDefault(x => x.Name == name) ?? new SshConnectionConfig();
+                    WebModalRouter.Open(_web, "ssh-edit", new { page = "ssh-edit", mode = string.IsNullOrWhiteSpace(name) ? "add" : "edit", originalName = name ?? "", config = cfg });
+                    return;
+                }
+                if (action == "ssh.save")
+                {
+                    try
+                    {
+                        var cfg = JsonSerializer.Deserialize<SshConnectionConfig>(payload.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                        var original = payload.TryGetProperty("originalName", out var oldName) ? oldName.GetString() : null;
+                        if (cfg == null || string.IsNullOrWhiteSpace(cfg.Host) || string.IsNullOrWhiteSpace(cfg.User))
+                        {
+                            MessageBox.Show(this, "请填写主机和用户名。", "SSH 配置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                        else
+                        {
+                            SaveSshConnection(cfg, original);
+                            WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _settings.SshConnections });
+                        }
+                    }
+                    catch (Exception ex) { MessageBox.Show(this, ex.Message, "SSH 配置保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                    return;
+                }
+                if (action == "ssh.delete")
+                {
+                    var name = payload.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        DeleteSshConnection(name);
+                        WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _settings.SshConnections });
+                    }
+                    return;
+                }
+                if (action == "ssh.connect")
+                {
+                    var name = payload.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    if (!string.IsNullOrWhiteSpace(name)) OpenSshConnection(name);
+                    return;
+                }
             })) return;
             WebShellBridge.TryHandleWindowCommand(this, raw, action =>
             {
@@ -403,7 +444,14 @@ public sealed class MainForm : Form
             if (string.IsNullOrWhiteSpace(title)) return;
             SafeUi(() =>
             {
-                if (Text != title) Text = title;
+                var displayTitle = WebShellBridge.FormatSessionTitle(title);
+                if (Text != displayTitle) Text = displayTitle;
+                try
+                {
+                    var encoded = JsonSerializer.Serialize(displayTitle);
+                    _ = cwv.ExecuteScriptAsync($"window.__dshLauncherSetTitle && window.__dshLauncherSetTitle({encoded})");
+                }
+                catch { }
             });
         };
         cwv.NavigationCompleted += (_, e) =>
@@ -564,6 +612,35 @@ public sealed class MainForm : Form
 
     private void ShowWebModal(string page, object data) => WebModalRouter.Open(_web, page, data);
 
+    internal IReadOnlyList<SshConnectionConfig> SshConnectionSnapshot() => _settings.SshConnections.ToList();
+
+    internal SshConnectionConfig? FindSshConnection(string name) =>
+        _settings.SshConnections.FirstOrDefault(x => x.Name == name);
+
+    internal void SaveSshConnection(SshConnectionConfig config, string? originalName = null)
+    {
+        var old = !string.IsNullOrWhiteSpace(originalName)
+            ? _settings.SshConnections.FirstOrDefault(x => x.Name == originalName)
+            : _settings.SshConnections.FirstOrDefault(x => x.Name == config.Name);
+        if (old != null) _settings.SshConnections.Remove(old);
+        _settings.SshConnections.Add(config);
+        _settings.Save();
+        _connections.SyncFrom(_settings);
+    }
+
+    internal void DeleteSshConnection(string name)
+    {
+        _settings.SshConnections.RemoveAll(x => x.Name == name);
+        _settings.Save();
+        _connections.SyncFrom(_settings);
+    }
+
+    internal void OpenSshConnection(string name)
+    {
+        var connection = _connections.Connections.OfType<SshConnection>().FirstOrDefault(x => x.Config.Name == name);
+        if (connection != null) ShowOrOpenRemoteWindow(connection);
+    }
+
     private string ReadLocalHistory()
     {
         try { return File.Exists(_connections.Local.LogFile) ? File.ReadAllText(_connections.Local.LogFile) : string.Empty; }
@@ -582,8 +659,9 @@ public sealed class MainForm : Form
         SafeUi(() =>
         {
             if (IsDisposed || Disposing) return;
+            var restoreFromMinimized = WindowState == FormWindowState.Minimized;
             Show();
-            WindowState = FormWindowState.Normal;
+            if (restoreFromMinimized) WindowState = FormWindowState.Normal;
             Activate();
             BeginInvoke(new Action(() =>
             {

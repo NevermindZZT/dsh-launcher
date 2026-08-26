@@ -12,6 +12,7 @@ namespace DshLauncher;
 public sealed class ConnectionWindow : Form
 {
     private readonly IDshConnection _conn;
+    private readonly MainForm _main;
     private readonly ShellWebView _web = new();
     private readonly Panel _loadingOverlay = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 20, 24), Visible = true };
     private readonly LoadingSpinner _spinner = new() { Size = new Size(56, 56) };
@@ -25,11 +26,13 @@ public sealed class ConnectionWindow : Form
 
     public IDshConnection Connection => _conn;
 
-    public ConnectionWindow(IDshConnection conn)
+    public ConnectionWindow(IDshConnection conn, MainForm main)
     {
         _conn = conn;
+        _main = main;
         Text = conn.DisplayName;
         FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = true;
         Resize += (_, _) => WebShellBridge.ApplyShape(this);
         // 远程窗口首帧直接使用系统深色背景，避免冷启动白闪
         var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
@@ -112,6 +115,53 @@ public sealed class ConnectionWindow : Form
             if (WebModalRouter.TryHandle(raw, (action, payload) =>
             {
                 if (action == "settings.save") { return; }
+                if (action == "ssh.form")
+                {
+                    if (_main != null)
+                    {
+                        var name = payload.TryGetProperty("name", out var n) ? n.GetString() : null;
+                        var cfg = string.IsNullOrWhiteSpace(name)
+                            ? new SshConnectionConfig()
+                            : _main.FindSshConnection(name) ?? new SshConnectionConfig();
+                        WebModalRouter.Open(_web, "ssh-edit", new { page = "ssh-edit", mode = string.IsNullOrWhiteSpace(name) ? "add" : "edit", originalName = name ?? "", config = cfg });
+                    }
+                    return;
+                }
+                if (action == "ssh.save")
+                {
+                    try
+                    {
+                        if (_main == null) return;
+                        var cfg = JsonSerializer.Deserialize<SshConnectionConfig>(payload.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                        var original = payload.TryGetProperty("originalName", out var oldName) ? oldName.GetString() : null;
+                        if (cfg == null || string.IsNullOrWhiteSpace(cfg.Host) || string.IsNullOrWhiteSpace(cfg.User))
+                        {
+                            MessageBox.Show(this, "请填写主机和用户名。", "SSH 配置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                        else
+                        {
+                            _main.SaveSshConnection(cfg, original);
+                            WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
+                        }
+                    }
+                    catch (Exception ex) { MessageBox.Show(this, ex.Message, "SSH 配置保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                    return;
+                }
+                if (action == "ssh.delete")
+                {
+                    if (_main != null && payload.TryGetProperty("name", out var n) && !string.IsNullOrWhiteSpace(n.GetString()))
+                    {
+                        _main.DeleteSshConnection(n.GetString()!);
+                        WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
+                    }
+                    return;
+                }
+                if (action == "ssh.connect")
+                {
+                    if (_main != null && payload.TryGetProperty("name", out var n) && !string.IsNullOrWhiteSpace(n.GetString()))
+                        _main.OpenSshConnection(n.GetString()!);
+                    return;
+                }
                 if (action == "logs.open") { WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return; }
                 if (action == "plugins.open") { WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>() }); return; }
                 if (action == "folder.list") { _ = ListFolderAsync(payload); return; }
@@ -125,7 +175,9 @@ public sealed class ConnectionWindow : Form
                     case "settings": WebModalRouter.Open(_web, "settings"); break;
                     case "logs": WebModalRouter.Open(_web, "logs"); break;
                     case "plugins": WebModalRouter.Open(_web, "plugins"); break;
-                    case "ssh": break;
+                    case "ssh":
+                        if (_main != null) WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
+                        break;
                     case "restart": _ = RestartAsync(); break;
                     case "about": WebModalRouter.Open(_web, "about", new { page="about", version=VersionHelper.Current }); break;
                 }
@@ -138,9 +190,15 @@ public sealed class ConnectionWindow : Form
             if (string.IsNullOrWhiteSpace(title)) return;
             SafeUi(() =>
             {
-                // 标题保留远程连接名（区分多服务器），格式：连接名 · 页面标题
-                var combined = $"{_conn.DisplayName} · {title}";
+                // 标题固定以产品名开头，并显示当前 SSH 会话名
+                var combined = WebShellBridge.FormatSessionTitle(_conn.DisplayName);
                 if (Text != combined) Text = combined;
+                try
+                {
+                    var encoded = JsonSerializer.Serialize(combined);
+                    _ = cwv.ExecuteScriptAsync($"window.__dshLauncherSetTitle && window.__dshLauncherSetTitle({encoded})");
+                }
+                catch { }
             });
         };
 
@@ -358,9 +416,9 @@ public sealed class ConnectionWindow : Form
     /// <summary>Ctrl+Shift+C：由主窗口弹出连接选择器（选择服务器后连接）。</summary>
     private void OpenPicker()
     {
-        if (Owner is MainForm mf)
+        if (_main != null)
         {
-            mf.ShowConnectionPicker();
+            _main.ShowConnectionPicker();
         }
         else
         {

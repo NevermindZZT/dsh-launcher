@@ -26,6 +26,15 @@ internal static class WebShellBridge
         catch { return false; }
     }
 
+    public static string FormatSessionTitle(string title)
+    {
+        const string product = "DeepSeek Harness";
+        var session = (title ?? string.Empty).Trim();
+        if (session.StartsWith(product, StringComparison.OrdinalIgnoreCase))
+            session = session[product.Length..].Trim().TrimStart('-', '—', '–', ':').Trim();
+        return string.IsNullOrWhiteSpace(session) ? product : $"{product} —— {session}";
+    }
+
     public static void ToggleMaximize(Form form)
     {
         if (form.WindowState == FormWindowState.Maximized)

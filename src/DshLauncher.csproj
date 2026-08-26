@@ -25,4 +25,16 @@
     <EmbeddedResource Include="app.ico" />
   </ItemGroup>
 
+  <!-- The launcher uses WebView2 WinForms only; exclude the package transitive WPF assembly to avoid WindowsBase conflicts. -->
+  <ItemGroup>
+    <Reference Remove="Microsoft.Web.WebView2.Wpf" />
+  </ItemGroup>
+
+  <Target Name="RemoveWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="Microsoft.Web.WebView2.Wpf" />
+      <ReferencePath Remove="**\Microsoft.Web.WebView2.Wpf.dll" />
+    </ItemGroup>
+  </Target>
+
 </Project>

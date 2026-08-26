@@ -84,3 +84,9 @@
 - SSH 添加工作区弹窗显示在对应母窗口；
 - 现有 dsh WebSocket、Cookie、Manager Agent、HTTP 代理、快捷键和托盘功能正常；
 - 本地与远程连接之间没有状态串扰。
+
+### 阶段三至六进度（已实现）
+
+- 日志、插件、SSH 连接选择、SSH 编辑及远程目录入口已切换到当前 WebView2 的独立 Web Modal context；旧 WinForms 类保留作为回退代码。
+- ConnectionWindow 的远程目录拦截继续由所属 SSH WebView 处理，避免多窗口串联。
+- WebModalRouter 增加通用 modal 页面路由及独立窗口上下文入口。

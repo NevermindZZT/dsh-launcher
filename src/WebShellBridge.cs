@@ -13,6 +13,7 @@ internal static class WebShellBridge
             var root = doc.RootElement;
             if (!root.TryGetProperty("type", out var type) || type.GetString() != "launcher") return false;
             var name = root.TryGetProperty("action", out var value) ? value.GetString() ?? "" : "";
+            Diag.Log($"WebShellBridge received action={name}");
             switch (name)
             {
                 case "minimize": form.WindowState = FormWindowState.Minimized; return true;
@@ -67,7 +68,7 @@ internal static class WebShellBridge
         form.Controls.Add(panel);
         void layout()
         {
-            panel.Bounds = new Rectangle(8, 8, Math.Max(0, form.ClientSize.Width - 316), 24);
+            panel.Bounds = new Rectangle(8, 8, Math.Max(0, form.ClientSize.Width - 520), 24);
             panel.BringToFront();
         }
         form.Resize += (_, _) => layout();

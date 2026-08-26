@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -59,7 +60,6 @@ public sealed class ConnectionWindow : Form
         };
         Controls.Add(_loadingOverlay);
         WebShellBridge.InstallResizeGrips(this);
-        WebShellBridge.InstallTitleDragSurface(this);
 
         FormClosing += (_, _) =>
         {
@@ -105,19 +105,29 @@ public sealed class ConnectionWindow : Form
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+        await WebModalRouter.Install(_web);
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
+            if (WebModalRouter.TryHandle(raw, (action, payload) =>
+            {
+                if (action == "settings.save") { return; }
+                if (action == "logs.open") { WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return; }
+                if (action == "plugins.open") { WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>() }); return; }
+                if (action == "folder.list") { _ = ListFolderAsync(payload); return; }
+                if (action == "folder.create") { _ = CreateFolderAsync(payload); return; }
+                if (action == "folder.refresh" || action == "folder.list") { _ = ListFolderAsync(payload); return; }
+            })) return;
             WebShellBridge.TryHandleWindowCommand(this, raw, action =>
             {
                 switch (action)
                 {
-                    case "settings": MessageBox.Show(this, "SSH 窗口设置将在下一阶段迁移为 Web 弹窗。", "设置", MessageBoxButtons.OK, MessageBoxIcon.Information); break;
-                    case "logs": ShowLogForm(); break;
-                    case "plugins": ShowPluginsForm(); break;
+                    case "settings": WebModalRouter.Open(_web, "settings"); break;
+                    case "logs": WebModalRouter.Open(_web, "logs"); break;
+                    case "plugins": WebModalRouter.Open(_web, "plugins"); break;
                     case "ssh": break;
                     case "restart": _ = RestartAsync(); break;
-                    case "about": MessageBox.Show(this, "DshLauncher\n\n" + _conn.DisplayName, "关于", MessageBoxButtons.OK, MessageBoxIcon.Information); break;
+                    case "about": WebModalRouter.Open(_web, "about", new { page="about", version=VersionHelper.Current }); break;
                 }
             });
         };
@@ -324,8 +334,8 @@ public sealed class ConnectionWindow : Form
         switch (keyData)
         {
             case Keys.Control | Keys.Shift | Keys.R: _ = RestartAsync(); return true;
-            case Keys.Control | Keys.Shift | Keys.L: ShowLogForm(); return true;
-            case Keys.Control | Keys.Shift | Keys.P: ShowPluginsForm(); return true;
+            case Keys.Control | Keys.Shift | Keys.L: WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return true;
+            case Keys.Control | Keys.Shift | Keys.P: WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>() }); return true;
             case Keys.Control | Keys.Shift | Keys.C: OpenPicker(); return true;
             case Keys.Control | Keys.Shift | Keys.Y: _ = SyncFromLocalAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.O: OpenRemoteFolder(); return true;
@@ -359,15 +369,17 @@ public sealed class ConnectionWindow : Form
     }
 
     /// <summary>Ctrl+Shift+O：远端目录浏览器 → 选服务器路径写入 dsh 工作区 → 刷新页面（无需文件选择器）。</summary>
-    private async void OpenRemoteFolder()
+    private void OpenRemoteFolder()
     {
-        if (_conn is not SshConnection sc)
+        if (_conn is not SshConnection)
         {
             MessageBox.Show(this, "仅 SSH 远程连接支持此功能。", "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        // 远端目录浏览器选择服务器路径
-        using var browser = new RemoteFolderBrowserForm(sc.ListRemoteDirectory);
+        // 目录选择器在当前 SSH WebView context 中打开，避免跨窗口串联。
+        WebModalRouter.Open(_web, "folder", new { page="folder", connection=_conn.DisplayName });
+        return;
+        /* using var browser = new RemoteFolderBrowserForm(sc.ListRemoteDirectory);
         if (browser.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(browser.SelectedPath))
         {
             var path = browser.SelectedPath;
@@ -396,7 +408,7 @@ public sealed class ConnectionWindow : Form
                 HideLoading();
                 MessageBox.Show(this, ex.Message, "添加工作区失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-        }
+        } */
     }
 
     /// <summary>重新导航当前 URL（刷新页面）。</summary>
@@ -459,13 +471,7 @@ public sealed class ConnectionWindow : Form
         catch (Exception ex) { HideLoading(); MessageBox.Show(this, ex.Message, "重启失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 
-    private void ShowLogForm()
-    {
-        using var f = new LogForm(_conn); f.ShowDialog(this);
-    }
-
-    private void ShowPluginsForm()
-    {
-        using var f = new PluginsForm(_conn, RestartAsync); f.ShowDialog(this);
-    }
+    private string ReadHistory() { try { return File.Exists(_conn.LogFile) ? File.ReadAllText(_conn.LogFile) : ""; } catch { return ""; } }
+    private async Task ListFolderAsync(JsonElement p) { if (_conn is not SshConnection sc) return; var path=p.TryGetProperty("path",out var q)?q.GetString()??"~":"~"; try { var dirs=sc.ListRemoteDirectory(path); WebModalRouter.Open(_web,"folder",new {page="folder",path,dirs}); } catch(Exception ex){ _conn.AppendLog(ex.Message); } await Task.CompletedTask; }
+    private async Task CreateFolderAsync(JsonElement p) { if (_conn is not SshConnection sc) return; var path=p.TryGetProperty("path",out var q)?q.GetString():null; if(string.IsNullOrWhiteSpace(path)) return; var (ok,err)=await sc.CreateWorkspaceRpcAsync(path,line=>_conn.AppendLog(line)); if(!ok) { await sc.AddRemoteWorkspaceAsync(path,line=>_conn.AppendLog(line)); } NavigateCurrent(); }
 }

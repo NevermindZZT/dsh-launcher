@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Text.Json;
 using Microsoft.Win32;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -26,8 +27,6 @@ public sealed class MainForm : Form
     private const string ShowEventName = "Local\\DshLauncher_ShowWindow";
     private EventWaitHandle? _showEvent;
     private Thread? _showWatcher;
-    private LogForm? _logForm;
-    private PluginsForm? _pluginsForm;
     private string? _pendingUpdate;
     private bool _quitting;
     private bool _loadingHiddenGuard;
@@ -91,7 +90,6 @@ public sealed class MainForm : Form
         };
         Controls.Add(_loadingOverlay);
         WebShellBridge.InstallResizeGrips(this);
-        WebShellBridge.InstallTitleDragSurface(this);
 
         // 托盘：全部控制入口
         _tray = new NotifyIcon
@@ -231,20 +229,7 @@ public sealed class MainForm : Form
                 "未配置 SSH 连接。请在设置 → SSH 连接中添加服务器。", ToolTipIcon.Info);
             return;
         }
-        using var picker = new ConnectionPickerForm(_connections);
-        if (picker.ShowDialog(this) == DialogResult.OK && picker.Selected != null)
-        {
-            var c = picker.Selected;
-            if (c.IsRemote)
-            {
-                ShowOrOpenRemoteWindow(c); // 已打开则激活，未打开则新建窗口并连接
-            }
-            else
-            {
-                if (c.State != HostState.Running) _ = ConnectLocalAsync();
-                ShowMainWindow();
-            }
-        }
+        ShowWebModal("ssh");
     }
 
     /// <summary>连接本地（供选择器/托盘调用）。</summary>
@@ -369,6 +354,18 @@ public sealed class MainForm : Form
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
+            Diag.Log($"WebMessageReceived raw={raw}");
+            if (WebModalRouter.TryHandle(raw, (action, payload) =>
+            {
+                if (action == "settings.save") { WebModalRouter.Apply(_settings, payload); _connections.SyncFrom(_settings); _ = _managerAgent.RestartAsync(); return; }
+                if (action == "logs.open") { ShowWebModal("logs", new { page="logs", history=ReadHistory() }); return; }
+                if (action == "logs.clear") { try { File.WriteAllText(_host.LogFile, string.Empty); } catch { } ShowWebModal("logs", new { page="logs", history=string.Empty }); return; }
+                if (action == "plugins.open" || action == "plugins.list") { ShowPluginsModal(); return; }
+                if (action.StartsWith("plugins.") && payload.ValueKind == JsonValueKind.Object) { var pkg=payload.TryGetProperty("package",out var q)?q.GetString():null; var verb=action[9..]; if (verb=="install"&&!string.IsNullOrWhiteSpace(pkg)) _=_host.RunPluginAsync(new[]{"add",pkg},x=>_host.AppendLog(x)); else if (verb=="remove"&&!string.IsNullOrWhiteSpace(pkg)) _=_host.RunPluginAsync(new[]{"remove",pkg},x=>_host.AppendLog(x)); else if (verb=="update") _=_host.RunPluginAsync(string.IsNullOrWhiteSpace(pkg)?new[]{"update"}:new[]{"update",pkg},x=>_host.AppendLog(x)); return; }
+                if (action == "ssh.add" || action == "ssh.edit") { try { var cfg=JsonSerializer.Deserialize<SshConnectionConfig>(payload.GetRawText()); if(cfg!=null&&!string.IsNullOrWhiteSpace(cfg.Host)&&!string.IsNullOrWhiteSpace(cfg.User)){ var old=_settings.SshConnections.FirstOrDefault(x=>x.Name==cfg.Name); if(old!=null) _settings.SshConnections.Remove(old); _settings.SshConnections.Add(cfg); _settings.Save(); _connections.SyncFrom(_settings); WebModalRouter.Open(_web,"ssh",new {page="ssh",ssh=_settings.SshConnections}); } } catch { } return; }
+                if (action == "ssh.delete") { var name=payload.TryGetProperty("name",out var n)?n.GetString():null; if(!string.IsNullOrWhiteSpace(name)){_settings.SshConnections.RemoveAll(x=>x.Name==name);_settings.Save();_connections.SyncFrom(_settings);WebModalRouter.Open(_web,"ssh",new {page="ssh",ssh=_settings.SshConnections});} return; }
+                if (action == "ssh.connect") { var name=payload.TryGetProperty("name",out var n)?n.GetString():null; var c=_connections.Connections.OfType<SshConnection>().FirstOrDefault(x=>x.Config.Name==name); if(c!=null) ShowOrOpenRemoteWindow(c); return; }
+            })) return;
             WebShellBridge.TryHandleWindowCommand(this, raw, action =>
             {
                 switch (action)
@@ -558,36 +555,26 @@ public sealed class MainForm : Form
     private static extern short GetKeyState(int nVirtKey);
 
     /// <summary>打开（或聚焦）宿主日志窗口。</summary>
-    private void ShowLogForm()
-    {
-        if (_logForm == null || _logForm.IsDisposed)
-        {
-            _logForm = new LogForm(_host);
-            _logForm.Show(this);
-        }
-        else
-        {
-            _logForm.Show();
-            _logForm.Activate();
-        }
-    }
+    private void ShowLogForm() => ShowWebModal("logs", new { page = "logs", history = ReadHistory() });
 
     /// <summary>打开（或聚焦）插件管理窗口。</summary>
-    private void ShowPluginsForm()
-    {
-        if (_pluginsForm == null || _pluginsForm.IsDisposed)
-        {
-            _pluginsForm = new PluginsForm(_host, RestartHostAsync);
-            _pluginsForm.Show(this);
-        }
-        else
-        {
-            _pluginsForm.Show();
-            _pluginsForm.Activate();
-        }
-    }
+    private void ShowPluginsForm() => ShowPluginsModal();
 
     private void ShowWebModal(string page) => WebModalRouter.Open(_web, _settings, page);
+
+    private void ShowWebModal(string page, object data) => WebModalRouter.Open(_web, page, data);
+
+    private string ReadHistory()
+    {
+        try { return File.Exists(_host.LogFile) ? File.ReadAllText(_host.LogFile) : string.Empty; }
+        catch { return string.Empty; }
+    }
+
+    private void ShowPluginsModal()
+    {
+        object plugins = _host.IsRemote ? Array.Empty<object>() : new PluginManager().ListPlugins();
+        ShowWebModal("plugins", new { page = "plugins", plugins });
+    }
 
     /// <summary>打开设置窗口；保存后把设置应用到宿主。</summary>
     private void ShowSettingsForm()

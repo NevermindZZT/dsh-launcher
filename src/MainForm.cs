@@ -109,9 +109,9 @@ public sealed class MainForm : Form
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("重启宿主  (Ctrl+Shift+R)", null, (_, _) => _ = RestartHostAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("日志  (Ctrl+Shift+L)", null, (_, _) => ShowLogForm());
-        trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowPluginsForm());
-        trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowWebModal("settings"));
+        trayMenu.Items.Add("日志  (Ctrl+Shift+L)", null, (_, _) => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() }));
+        trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins() }));
+        trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowMainModal("settings"));
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("更新 dsh…", null, (_, _) => _ = UpdateDshAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
@@ -555,25 +555,45 @@ public sealed class MainForm : Form
     private static extern short GetKeyState(int nVirtKey);
 
     /// <summary>打开（或聚焦）宿主日志窗口。</summary>
-    private void ShowLogForm() => ShowWebModal("logs", new { page = "logs", history = ReadHistory() });
+    private void ShowLogForm() => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() });
 
     /// <summary>打开（或聚焦）插件管理窗口。</summary>
-    private void ShowPluginsForm() => ShowPluginsModal();
+    private void ShowPluginsForm() => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins() });
 
     private void ShowWebModal(string page) => WebModalRouter.Open(_web, _settings, page);
 
     private void ShowWebModal(string page, object data) => WebModalRouter.Open(_web, page, data);
 
-    private string ReadHistory()
+    private string ReadLocalHistory()
     {
-        try { return File.Exists(_host.LogFile) ? File.ReadAllText(_host.LogFile) : string.Empty; }
+        try { return File.Exists(_connections.Local.LogFile) ? File.ReadAllText(_connections.Local.LogFile) : string.Empty; }
         catch { return string.Empty; }
     }
 
-    private void ShowPluginsModal()
+    private object ListLocalPlugins() => new PluginManager().ListPlugins();
+
+    private string ReadHistory() => ReadLocalHistory();
+
+    private void ShowPluginsModal() => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins() });
+
+    /// <summary>显示主窗口并在 UI 队列中打开本地 modal，避免隐藏窗口上的 WebView 调用。</summary>
+    private void ShowMainModal(string page, object? data = null)
     {
-        object plugins = _host.IsRemote ? Array.Empty<object>() : new PluginManager().ListPlugins();
-        ShowWebModal("plugins", new { page = "plugins", plugins });
+        SafeUi(() =>
+        {
+            if (IsDisposed || Disposing) return;
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+            BeginInvoke(new Action(() =>
+            {
+                if (!IsDisposed && IsHandleCreated)
+                {
+                    if (data == null) WebModalRouter.Open(_web, _settings, page);
+                    else WebModalRouter.Open(_web, page, data);
+                }
+            }));
+        });
     }
 
     /// <summary>打开设置窗口；保存后把设置应用到宿主。</summary>

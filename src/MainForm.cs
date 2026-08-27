@@ -17,6 +17,7 @@ public sealed class MainForm : Form
 {
     private readonly ShellWebView _web = new();
     private readonly NotifyIcon _tray;
+    private readonly WindowsNotificationService _notifications;
     private readonly AppSettings _settings = AppSettings.Load();
     // 连接抽象：本地（HostSupervisor）或 SSH 远端（SshConnection），构造时按设置创建
     private readonly ConnectionManager _connections = new();
@@ -98,6 +99,7 @@ public sealed class MainForm : Form
             Text = "DeepSeek Harness",
             Visible = true, // 常驻托盘：启动即显示，关闭主窗口只是隐藏
         };
+        _notifications = new WindowsNotificationService(_tray);
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("打开主窗口", null, (_, _) => ShowMainWindow());
         // SSH 连接窗口（显示/激活）
@@ -166,6 +168,7 @@ public sealed class MainForm : Form
 
         FormClosed += (_, _) =>
         {
+            _notifications.Dispose();
             if (_host is IDisposable d) { try { d.Dispose(); } catch { } }
             try { _showEvent?.Dispose(); } catch { }
         };
@@ -355,6 +358,11 @@ public sealed class MainForm : Form
         {
             var raw = e.TryGetWebMessageAsString();
             Diag.Log($"WebMessageReceived raw={raw}");
+            if (BrowserNotificationBridge.TryParse(raw, out var notice))
+            {
+                _notifications.Show(notice.Title, notice.Body, ShowMainWindow, notice.RequireInteraction);
+                return;
+            }
             if (WebModalRouter.TryHandle(raw, (action, payload) =>
             {
                 if (action == "settings.save") { WebModalRouter.Apply(_settings, payload); _connections.SyncFrom(_settings); _ = _managerAgent.RestartAsync(); return; }
@@ -423,7 +431,7 @@ public sealed class MainForm : Form
         // 深色背景防加载白闪（与 dsh 深色 UI 一致）
         _web.DefaultBackgroundColor = Color.FromArgb(18, 20, 24);
         cwv.NavigationStarting += OnNavigationStarting;
-        cwv.PermissionRequested += OnPermissionRequested;
+        WebView2PermissionPolicy.Attach(cwv);
         // WebView2 焦点下的快捷键拦截：Chromium 会优先消费 Ctrl+Shift 组合键，
         // 通过内部 CoreWebView2Controller 的 AcceleratorKeyPressed 事件接管（WinForms 控件未公开该属性，反射获取）
         try
@@ -495,14 +503,6 @@ public sealed class MainForm : Form
         {
             try { Process.Start(new ProcessStartInfo(e.Uri) { UseShellExecute = true }); } catch { }
         }
-    }
-
-    /// <summary>权限默认拒绝；放行剪贴板读取（复制按钮需要）。</summary>
-    private void OnPermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs e)
-    {
-        e.State = e.PermissionKind == CoreWebView2PermissionKind.ClipboardRead
-            ? CoreWebView2PermissionState.Allow
-            : CoreWebView2PermissionState.Deny;
     }
 
     private int _navFailures;
@@ -611,6 +611,9 @@ public sealed class MainForm : Form
     private void ShowWebModal(string page) => WebModalRouter.Open(_web, _settings, page);
 
     private void ShowWebModal(string page, object data) => WebModalRouter.Open(_web, page, data);
+
+    internal void ShowSystemNotification(string title, string body, Action activate, bool requireInteraction = false) =>
+        SafeUi(() => _notifications.Show(title, body, activate, requireInteraction));
 
     internal IReadOnlyList<SshConnectionConfig> SshConnectionSnapshot() => _settings.SshConnections.ToList();
 

@@ -109,9 +109,19 @@ public sealed class ConnectionWindow : Form
         cwv.Settings.IsStatusBarEnabled = false;
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
         await WebModalRouter.Install(_web);
+        WebView2PermissionPolicy.Attach(cwv);
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
+            if (BrowserNotificationBridge.TryParse(raw, out var notice))
+            {
+                _main.ShowSystemNotification(
+                    string.IsNullOrWhiteSpace(notice.Title) ? "DeepSeek Harness" : $"DeepSeek Harness · {notice.Title}",
+                    notice.Body,
+                    () => SafeUi(() => { Show(); Activate(); }),
+                    notice.RequireInteraction);
+                return;
+            }
             if (WebModalRouter.TryHandle(raw, (action, payload) =>
             {
                 if (action == "settings.save") { return; }

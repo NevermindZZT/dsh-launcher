@@ -25,6 +25,7 @@ public sealed class MainForm : Form
     private IDshConnection _current = null!;
 
     private readonly List<ConnectionWindow> _remoteWindows = new();
+    private readonly List<LinkWindow> _linkWindows = new();
     private const string ShowEventName = "Local\\DshLauncher_ShowWindow";
     private EventWaitHandle? _showEvent;
     private Thread? _showWatcher;
@@ -431,6 +432,11 @@ public sealed class MainForm : Form
         // 深色背景防加载白闪（与 dsh 深色 UI 一致）
         _web.DefaultBackgroundColor = Color.FromArgb(18, 20, 24);
         cwv.NavigationStarting += OnNavigationStarting;
+        cwv.NewWindowRequested += (_, e) =>
+        {
+            e.Handled = true;
+            OpenExternalLink(e.Uri);
+        };
         WebView2PermissionPolicy.Attach(cwv);
         // WebView2 焦点下的快捷键拦截：Chromium 会优先消费 Ctrl+Shift 组合键，
         // 通过内部 CoreWebView2Controller 的 AcceleratorKeyPressed 事件接管（WinForms 控件未公开该属性，反射获取）
@@ -492,17 +498,31 @@ public sealed class MainForm : Form
         }
     }
 
-    /// <summary>仅放行 loopback http；外部 http(s) 交给系统浏览器。</summary>
+    /// <summary>拦截 dsh 外部链接：按设置打开独立 WebView2 或系统浏览器。</summary>
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
         if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var u)) return;
         var loopback = (u.Host == "127.0.0.1" || u.Host == "localhost") && u.Scheme == "http";
         if (loopback) return;
         e.Cancel = true;
-        if (u.Scheme is "http" or "https")
+        OpenExternalLink(e.Uri);
+    }
+
+    internal void OpenExternalLink(string uri)
+    {
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var target)) return;
+        SafeUi(() =>
         {
-            try { Process.Start(new ProcessStartInfo(e.Uri) { UseShellExecute = true }); } catch { }
-        }
+            if (_settings.OpenLinksInWebView && (target.Scheme is "http" or "https"))
+            {
+                var window = new LinkWindow(this, target);
+                _linkWindows.Add(window);
+                window.FormClosed += (_, _) => _linkWindows.Remove(window);
+                window.Show();
+                return;
+            }
+            try { Process.Start(new ProcessStartInfo(target.AbsoluteUri) { UseShellExecute = true }); } catch { }
+        });
     }
 
     private int _navFailures;

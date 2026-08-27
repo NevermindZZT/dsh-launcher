@@ -12,6 +12,8 @@ public sealed class AppSettings
     public bool CloseExits { get; set; }
     /// <summary>开机自启（HKCU Run 键）。</summary>
     public bool AutoStart { get; set; }
+    /// <summary>true = external links open in a new WebView2 window; false = system browser (default).</summary>
+    public bool OpenLinksInWebView { get; set; }
 
     /// <summary>SSH 连接配置列表（多主机；本地连接始终存在，SSH 按 AutoConnect 并行连接）。</summary>
     public System.Collections.Generic.List<SshConnectionConfig> SshConnections { get; set; } = new();

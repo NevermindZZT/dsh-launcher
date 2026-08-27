@@ -194,6 +194,12 @@ public sealed class ConnectionWindow : Form
             });
         };
         _web.DefaultBackgroundColor = Color.FromArgb(18, 20, 24);
+        cwv.NavigationStarting += OnNavigationStarting;
+        cwv.NewWindowRequested += (_, e) =>
+        {
+            e.Handled = true;
+            _main.OpenExternalLink(e.Uri);
+        };
         cwv.DocumentTitleChanged += (_, _) =>
         {
             var title = cwv.DocumentTitle;
@@ -342,6 +348,14 @@ public sealed class ConnectionWindow : Form
             else if (s == HostState.Running) ShowLoading("正在加载界面…");
         });
         _conn.Ready += url => SafeUi(() => { Navigate(url); HideLoading(); });
+    }
+
+    private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var uri)) return;
+        if (uri.Scheme is "http" or "https") return;
+        e.Cancel = true;
+        _main.OpenExternalLink(e.Uri);
     }
 
     private static string Sanitize(string s)

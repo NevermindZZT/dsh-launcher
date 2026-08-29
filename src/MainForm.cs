@@ -59,6 +59,8 @@ public sealed class MainForm : Form
         Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
         Text = "DeepSeek Harness";
         FormBorderStyle = FormBorderStyle.None;
+        MinimizeBox = true;
+        // 无边框窗口仍保留最小化系统样式，确保任务栏点击可最小化。
         Resize += (_, _) => WebShellBridge.ApplyShape(this);
         // 在窗口句柄/主题初始化前就设置深色背景，避免冷启动首帧出现白条
         var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
@@ -578,8 +580,27 @@ public sealed class MainForm : Form
     /// </summary>
     internal void SetWorkAreaMaximizedBounds(Rectangle bounds) => MaximizedBounds = bounds;
 
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            // FormBorderStyle.None 不一定生成 WS_MINIMIZEBOX；补上后 Shell 会把任务栏点击
+            // 转换为 SC_MINIMIZE，而不是仅激活当前窗口。
+            cp.Style |= 0x00020000; // WS_MINIMIZEBOX
+            cp.Style |= 0x00080000; // WS_SYSMENU
+            cp.ExStyle |= 0x00040000; // WS_EX_APPWINDOW
+            return cp;
+        }
+    }
+
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == 0x0112 && (m.WParam.ToInt64() & 0xFFF0L) == 0xF020L) // WM_SYSCOMMAND/SC_MINIMIZE
+        {
+            WindowState = FormWindowState.Minimized;
+            return;
+        }
         if (m.Msg == 0x84)
         {
             var hit = WebShellBridge.ResizeHitTest(this, PointToClient(Cursor.Position));

@@ -208,7 +208,13 @@ public sealed class ManagerAgent : IAsyncDisposable
             using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
             result.Status = (int)response.StatusCode;
             result.Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var header in response.Headers.Concat(response.Content.Headers)) { if (!result.Headers.ContainsKey(header.Key)) result.Headers[header.Key] = string.Join(", ", header.Value); }
+            foreach (var header in response.Headers.Concat(response.Content.Headers))
+            {
+                if (string.Equals(header.Key, "Set-Cookie", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!result.Headers.ContainsKey(header.Key)) result.Headers[header.Key] = string.Join(", ", header.Value);
+            }
+            if (response.Headers.TryGetValues("Set-Cookie", out var setCookies))
+                result.SetCookies = setCookies.ToList();
             result.Body = Convert.ToBase64String(await response.Content.ReadAsByteArrayAsync(ct));
         }
         catch (Exception ex) { result.Status = 502; result.Error = ex.Message; }
@@ -334,7 +340,7 @@ public sealed class ManagerAgent : IAsyncDisposable
     }
 
     private sealed class EnrollResponse { public string AgentId { get; set; } = ""; public string AgentToken { get; set; } = ""; }
-    private sealed class AgentMessage { public string Type { get; set; } = ""; public string AgentType { get; set; } = ""; public string AgentVersion { get; set; } = ""; public string PluginVersion { get; set; } = ""; public string[]? Capabilities { get; set; } public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public bool? OK { get; set; } public string? Error { get; set; } public int Status { get; set; } public Dictionary<string,string>? Headers { get; set; } public string? Body { get; set; } public string FrameType { get; set; } = ""; public List<ManagerInstance>? Instances { get; set; } }
+    private sealed class AgentMessage { public string Type { get; set; } = ""; public string AgentType { get; set; } = ""; public string AgentVersion { get; set; } = ""; public string PluginVersion { get; set; } = ""; public string[]? Capabilities { get; set; } public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public bool? OK { get; set; } public string? Error { get; set; } public int Status { get; set; } public Dictionary<string,string>? Headers { get; set; } public List<string>? SetCookies { get; set; } public string? Body { get; set; } public string FrameType { get; set; } = ""; public List<ManagerInstance>? Instances { get; set; } }
     private sealed class ManagerCommand { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Action { get; set; } = ""; }
     private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; }
     private sealed class ManagerProxyWebSocketOpen { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Path { get; set; } = "/"; }

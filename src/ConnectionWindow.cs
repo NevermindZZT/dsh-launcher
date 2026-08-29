@@ -32,6 +32,7 @@ public sealed class ConnectionWindow : Form
         _main = main;
         Text = conn.DisplayName;
         FormBorderStyle = FormBorderStyle.None;
+        MinimizeBox = true;
         ShowInTaskbar = true;
         Resize += (_, _) => WebShellBridge.ApplyShape(this);
         // 远程窗口首帧直接使用系统深色背景，避免冷启动白闪
@@ -395,8 +396,25 @@ public sealed class ConnectionWindow : Form
     // ── 快捷键（作用于本窗口连接）──
     internal void SetWorkAreaMaximizedBounds(Rectangle bounds) => MaximizedBounds = bounds;
 
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.Style |= 0x00020000; // WS_MINIMIZEBOX
+            cp.Style |= 0x00080000; // WS_SYSMENU
+            cp.ExStyle |= 0x00040000; // WS_EX_APPWINDOW
+            return cp;
+        }
+    }
+
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == 0x0112 && (m.WParam.ToInt64() & 0xFFF0L) == 0xF020L)
+        {
+            WindowState = FormWindowState.Minimized;
+            return;
+        }
         if (m.Msg == 0x84)
         {
             var hit = WebShellBridge.ResizeHitTest(this, PointToClient(Cursor.Position));

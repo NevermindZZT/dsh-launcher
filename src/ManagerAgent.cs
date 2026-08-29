@@ -78,7 +78,18 @@ public sealed class ManagerAgent : IAsyncDisposable
         var fingerprint = NormalizeFingerprint(m.ServerCertificateFingerprint);
         if (managerUri.Scheme == Uri.UriSchemeHttps && fingerprint.Length != 64) throw new InvalidOperationException("HTTPS 模式请填写 manager 启动日志中的 64 位 SHA-256 TLS 指纹");
         if (managerUri.Scheme == Uri.UriSchemeHttp) _log("[Manager] 警告：当前使用 HTTP，Agent 数据可能被窃听或篡改");
-        if (!string.IsNullOrWhiteSpace(m.AgentId) && !string.IsNullOrWhiteSpace(m.AgentToken)) return;
+        if (!string.IsNullOrWhiteSpace(m.AgentId) && !string.IsNullOrWhiteSpace(m.AgentToken))
+        {
+            using var probeClient = CreateHttpClient();
+            using var probe = await probeClient.PostAsJsonAsync(BuildHttpUrl("/api/v1/agent/heartbeat"), new { instances = Snapshot() }, _json, ct);
+            if (probe.IsSuccessStatusCode) return;
+            if (probe.StatusCode != HttpStatusCode.Unauthorized && probe.StatusCode != HttpStatusCode.Forbidden)
+                throw new InvalidOperationException("Manager Agent 凭证检查失败: HTTP " + (int)probe.StatusCode);
+            _log("[Manager] 保存的 Agent 凭证已失效，将重新配对");
+            m.AgentId = "";
+            m.AgentToken = "";
+            _settings.Save();
+        }
         if (string.IsNullOrWhiteSpace(m.PairingCode)) throw new InvalidOperationException("Manager 尚未配置 Agent 配对码");
         using var client = CreateHttpClient();
         var payload = new { pairingCode = m.PairingCode, name = string.IsNullOrWhiteSpace(m.AgentName) ? Environment.MachineName : m.AgentName, platform = "windows", launcherVersion = VersionHelper.Current, agentType = "launcher", agentVersion = VersionHelper.Current, capabilities = new[] { "command", "proxy.http", "proxy.websocket" } };

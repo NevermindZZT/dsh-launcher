@@ -54,7 +54,11 @@ public sealed class MainForm : Form
     {
         Diag.Log("MainForm ctor start");
         _connections.BuildFrom(_settings);
-        _managerAgent = new ManagerAgent(_settings, _connections, line => Diag.Log(line));
+        _managerAgent = new ManagerAgent(_settings, _connections, line =>
+        {
+            Diag.Log(line);
+            _host.AppendLog(line);
+        });
         _current = _connections.Local;
         Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
         Text = "DeepSeek Harness";

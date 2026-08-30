@@ -200,6 +200,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
             var target = new Uri(new Uri(connection.CurrentUrl.TrimEnd('/') + "/"), request.Path.TrimStart('/'));
             var targetOrigin = target.GetLeftPart(UriPartial.Authority);
+            _log("[Manager] 代理请求: " + request.Method + " " + request.Path + " -> " + target + " (instance=" + request.InstanceId + ")");
             using var message = new HttpRequestMessage(new HttpMethod(request.Method), target);
             var bodyBytes = string.IsNullOrEmpty(request.Body) ? Array.Empty<byte>() : Convert.FromBase64String(request.Body);
             var hasContentHeaders = request.Headers.Keys.Any(k => k.StartsWith("Content-", StringComparison.OrdinalIgnoreCase));
@@ -207,6 +208,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             foreach (var pair in request.Headers)
             {
                 if (string.Equals(pair.Key, "Host", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(pair.Key, "Accept-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(pair.Key, "Origin", StringComparison.OrdinalIgnoreCase)) { message.Headers.TryAddWithoutValidation(pair.Key, targetOrigin); continue; }
                 if (string.Equals(pair.Key, "Referer", StringComparison.OrdinalIgnoreCase)) { message.Headers.TryAddWithoutValidation(pair.Key, targetOrigin + "/"); continue; }
                 if (pair.Key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase))
@@ -216,17 +218,30 @@ public sealed class ManagerAgent : IAsyncDisposable
                 }
                 message.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
             }
+            message.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
             using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
             result.Status = (int)response.StatusCode;
             result.Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var header in response.Headers.Concat(response.Content.Headers))
             {
-                if (string.Equals(header.Key, "Set-Cookie", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(header.Key, "Set-Cookie", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(header.Key, "Content-Length", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(header.Key, "Content-Encoding", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(header.Key, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
                 if (!result.Headers.ContainsKey(header.Key)) result.Headers[header.Key] = string.Join(", ", header.Value);
             }
             if (response.Headers.TryGetValues("Set-Cookie", out var setCookies))
                 result.SetCookies = setCookies.ToList();
-            result.Body = Convert.ToBase64String(await response.Content.ReadAsByteArrayAsync(ct));
+            var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
+            result.Body = Convert.ToBase64String(responseBytes);
+            _log("[Manager] 代理响应: " + request.Method + " " + request.Path + " HTTP " + (int)response.StatusCode + " bytes=" + responseBytes.Length + " cookies=" + (result.SetCookies?.Count ?? 0));
+            if (request.Path.StartsWith("/api/session", StringComparison.OrdinalIgnoreCase)
+                || request.Path.StartsWith("/api/workspace", StringComparison.OrdinalIgnoreCase))
+            {
+                var preview = Encoding.UTF8.GetString(responseBytes);
+                if (preview.Length > 1200) preview = preview[..1200] + "…";
+                _log("[Manager] session API body: " + preview.Replace("\r", " ").Replace("\n", " "));
+            }
         }
         catch (Exception ex) { result.Status = 502; result.Error = ex.Message; }
         try { await SendAsync(socket, result, ct); } catch (Exception ex) { _log("[Manager] 返回代理结果失败: " + ex.Message); }

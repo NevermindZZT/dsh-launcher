@@ -176,8 +176,10 @@ public sealed class ConnectionWindow : Form
                 if (action == "logs.open") { WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return; }
                 if (action == "plugins.open") { WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>() }); return; }
                 if (action == "folder.list") { _ = ListFolderAsync(payload); return; }
+                if (action == "folder.parent") { _ = ParentFolderAsync(payload); return; }
+                if (action == "folder.select") { _ = SelectFolderAsync(payload); return; }
                 if (action == "folder.create") { _ = CreateFolderAsync(payload); return; }
-                if (action == "folder.refresh" || action == "folder.list") { _ = ListFolderAsync(payload); return; }
+                if (action == "folder.refresh") { _ = ListFolderAsync(payload); return; }
             })) return;
             WebShellBridge.TryHandleWindowCommand(this, raw, action =>
             {
@@ -468,7 +470,7 @@ public sealed class ConnectionWindow : Form
         }
     }
 
-    /// <summary>Ctrl+Shift+O：远端目录浏览器 → 选服务器路径写入 dsh 工作区 → 刷新页面（无需文件选择器）。</summary>
+    /// <summary>打开远端目录浏览器，默认显示 SSH 用户主目录。</summary>
     private void OpenRemoteFolder()
     {
         if (_conn is not SshConnection)
@@ -476,39 +478,10 @@ public sealed class ConnectionWindow : Form
             MessageBox.Show(this, "仅 SSH 远程连接支持此功能。", "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        // 目录选择器在当前 SSH WebView context 中打开，避免跨窗口串联。
-        WebModalRouter.Open(_web, "folder", new { page="folder", connection=_conn.DisplayName });
-        return;
-        /* using var browser = new RemoteFolderBrowserForm(sc.ListRemoteDirectory);
-        if (browser.ShowDialog(this) == DialogResult.OK && !string.IsNullOrEmpty(browser.SelectedPath))
-        {
-            var path = browser.SelectedPath;
-            ShowLoading($"正在添加工作区 {path} …");
-            // 主路径：dsh RPC workspace.create（后端正常创建，无需重启）
-            var (rpcOk, rpcErr) = await sc.CreateWorkspaceRpcAsync(path, line => SafeUi(() => { _loadingText.Text = line; }));
-            if (rpcOk)
-            {
-                HideLoading();
-                // 不弹完成确认框 —— 刷新后工作区出现在列表即为反馈
-                NavigateCurrent();
-                return;
-            }
-            // fallback：写入 workspace.json + 自动重启远端使生效
-            ShowLoading($"RPC 失败（{rpcErr}），改用写入配置文件并重启远端…");
-            try
-            {
-                await sc.AddRemoteWorkspaceAsync(path, line => SafeUi(() => { _loadingText.Text = line; }));
-                ShowLoading("正在重启远端 dsh 使工作区生效…");
-                await sc.RestartAsync();
-                NavigateCurrent();
-                HideLoading();
-            }
-            catch (Exception ex)
-            {
-                HideLoading();
-                MessageBox.Show(this, ex.Message, "添加工作区失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        } */
+
+        // 先显示选择器，再异步读取用户主目录，避免弹窗迟迟不出现。
+        WebModalRouter.Open(_web, "folder", new { page = "folder", path = "~", entries = Array.Empty<object>() });
+        _ = ListFolderAsync(default);
     }
 
     /// <summary>重新导航当前 URL（刷新页面）。</summary>
@@ -572,6 +545,87 @@ public sealed class ConnectionWindow : Form
     }
 
     private string ReadHistory() { try { return File.Exists(_conn.LogFile) ? File.ReadAllText(_conn.LogFile) : ""; } catch { return ""; } }
-    private async Task ListFolderAsync(JsonElement p) { if (_conn is not SshConnection sc) return; var path=p.TryGetProperty("path",out var q)?q.GetString()??"~":"~"; try { var dirs=sc.ListRemoteDirectory(path); WebModalRouter.Open(_web,"folder",new {page="folder",path,dirs}); } catch(Exception ex){ _conn.AppendLog(ex.Message); } await Task.CompletedTask; }
-    private async Task CreateFolderAsync(JsonElement p) { if (_conn is not SshConnection sc) return; var path=p.TryGetProperty("path",out var q)?q.GetString():null; if(string.IsNullOrWhiteSpace(path)) return; var (ok,err)=await sc.CreateWorkspaceRpcAsync(path,line=>_conn.AppendLog(line)); if(!ok) { await sc.AddRemoteWorkspaceAsync(path,line=>_conn.AppendLog(line)); } NavigateCurrent(); }
+    private Task ListFolderAsync(JsonElement p) => OpenFolderAsync(GetFolderPath(p));
+
+    private Task ParentFolderAsync(JsonElement p) => OpenFolderAsync(ParentFolderPath(GetFolderPath(p)));
+
+    private async Task OpenFolderAsync(string path)
+    {
+        if (_conn is not SshConnection sc) return;
+        path = string.IsNullOrWhiteSpace(path) ? "~" : path.Trim();
+        try
+        {
+            var requestedPath = path;
+            var entries = await Task.Run(() =>
+            {
+                if (requestedPath == "~") requestedPath = sc.GetRemoteHomeDirectory();
+                return sc.ListRemoteEntries(requestedPath)
+                    .Select(x => new { x.Path, x.IsDirectory })
+                    .ToArray();
+            });
+            path = requestedPath;
+            var dirs = entries.Where(x => x.IsDirectory).Select(x => x.Path).ToArray();
+            WebModalRouter.Open(_web, "folder", new { page = "folder", path, entries, dirs });
+        }
+        catch (Exception ex)
+        {
+            _conn.AppendLog(ex.Message);
+            MessageBox.Show(this, ex.Message, "读取远端目录失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private static string GetFolderPath(JsonElement p)
+    {
+        return p.ValueKind == JsonValueKind.Object && p.TryGetProperty("path", out var q)
+            ? q.GetString()?.Trim() ?? "~"
+            : "~";
+    }
+
+    private static string ParentFolderPath(string path)
+    {
+        var current = string.IsNullOrWhiteSpace(path) ? "~" : path.Trim();
+        if (current == "/") return "/";
+        if (current == "~") return "/";
+        var normalized = current.TrimEnd('/');
+        var slash = normalized.LastIndexOf('/');
+        return slash <= 0 ? "/" : normalized[..slash];
+    }
+
+    private Task SelectFolderAsync(JsonElement p) => AddFolderAsync(p);
+
+    private Task CreateFolderAsync(JsonElement p) => AddFolderAsync(p);
+
+    private async Task AddFolderAsync(JsonElement p)
+    {
+        if (_conn is not SshConnection sc) return;
+        var path = p.TryGetProperty("path", out var q) ? q.GetString()?.Trim() : null;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            MessageBox.Show(this, "请输入或选择远端目录。", "添加工作区", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        WebModalRouter.Close(_web);
+        ShowLoading($"正在添加工作区 {path} …");
+        try
+        {
+            var (ok, error) = await sc.CreateWorkspaceRpcAsync(path, line => SafeUi(() => _loadingText.Text = line));
+            if (!ok)
+            {
+                ShowLoading($"RPC 失败（{error}），改用配置文件并重启远端…");
+                await sc.AddRemoteWorkspaceAsync(path, line => SafeUi(() => _loadingText.Text = line));
+                ShowLoading("正在重启远端 dsh 使工作区生效…");
+                await sc.RestartAsync();
+            }
+            NavigateCurrent();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "添加工作区失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            HideLoading();
+        }
+    }
 }

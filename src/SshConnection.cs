@@ -289,19 +289,43 @@ public sealed class SshConnection : IDshConnection, IDisposable
     /// 完成后需要重启远端 dsh 使插件生效（调用方处理）。
     /// </summary>
 
-    /// <summary>列出远端目录的子目录（用于远端目录浏览器）。</summary>
-    public List<string> ListRemoteDirectory(string path)
+    /// <summary>获取 SSH 用户主目录的绝对路径。</summary>
+    public string GetRemoteHomeDirectory()
+    {
+        if (_tunnel == null) throw new InvalidOperationException("SSH 未连接");
+        var home = _runner.Exec("printf '%s' \"$HOME\"", 30).Trim();
+        return string.IsNullOrWhiteSpace(home) ? "~" : home;
+    }
+
+    /// <summary>列出远端目录项（文件夹和文件，用于远端目录浏览器）。</summary>
+    public List<RemoteEntry> ListRemoteEntries(string path)
     {
         if (_tunnel == null) throw new InvalidOperationException("SSH 未连接");
         var expanded = string.IsNullOrWhiteSpace(path) ? "~" : path.Trim();
-        var r = _runner.Exec($"ls -d {expanded}/*/ 2>/dev/null || echo", 30);
-        var dirs = r.Split('\n')
-            .Select(x => x.Trim().TrimEnd('/'))
-            .Where(x => x.Length > 0 && !x.Contains("[exit") && x != "." && x != "..")
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+        // 使用 find 避免 SshRunner 的 bash -lc 外层解析提前展开循环变量 $x。
+        var r = _runner.Exec($"find {expanded} -mindepth 1 -maxdepth 1 -printf '%y\\t%p\\n' 2>/dev/null || true", 30);
+        var entries = new List<RemoteEntry>();
+        foreach (var line in r.Split('\n'))
+        {
+            var separator = line.IndexOf('\t');
+            if (separator <= 0) continue;
+            var kind = line[..separator].Trim();
+            var entryPath = line[(separator + 1)..].Trim();
+            if (entryPath.Length == 0 || entryPath.Contains("[exit", StringComparison.OrdinalIgnoreCase)) continue;
+            if (kind == "d") entries.Add(new RemoteEntry(entryPath, true));
+            else if (kind == "f") entries.Add(new RemoteEntry(entryPath, false));
+        }
+        return entries
+            .OrderByDescending(x => x.IsDirectory)
+            .ThenBy(x => x.Path, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        return dirs;
     }
+
+    /// <summary>列出远端目录的子目录（兼容旧版原生目录浏览器）。</summary>
+    public List<string> ListRemoteDirectory(string path)
+        => ListRemoteEntries(path).Where(x => x.IsDirectory).Select(x => x.Path).ToList();
+
+    public sealed record RemoteEntry(string Path, bool IsDirectory);
 
     /// <summary>把选中的远端路径写入 dsh 工作区存储（~/.dsh/storages/workspace.json），刷新页面即可见。</summary>
 

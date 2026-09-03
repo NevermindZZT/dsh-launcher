@@ -135,7 +135,7 @@ public sealed class SettingsForm : ThemedForm
         panel.Controls.Add(_managerUrl, 1, row); row++;
         panel.Controls.Add(MkLabel("Agent 名称"), 0, row);
         panel.Controls.Add(_managerName, 1, row); row++;
-        panel.Controls.Add(MkLabel("配对码"), 0, row);
+        panel.Controls.Add(MkLabel("首次配对码（仅注册时使用）"), 0, row);
         panel.Controls.Add(_managerPairing, 1, row); row++;
         panel.Controls.Add(MkLabel("TLS 指纹（64 位 SHA-256）"), 0, row);
         panel.Controls.Add(_managerFingerprint, 1, row); row++;
@@ -196,12 +196,9 @@ public sealed class SettingsForm : ThemedForm
         _settings.Manager.AgentName = _managerName.Inner.Text.Trim();
         _settings.Manager.PairingCode = _managerPairing.Inner.Text.Trim();
         _settings.Manager.ServerCertificateFingerprint = _managerFingerprint.Inner.Text.Trim();
-        if (!string.IsNullOrWhiteSpace(_settings.Manager.PairingCode))
-        {
-            // 填入新配对码表示用户明确要求重新配对，清除旧 Agent 凭证。
-            _settings.Manager.AgentId = "";
-            _settings.Manager.AgentToken = "";
-        }
+        // PairingCode is only an enrollment secret. Keep an existing Agent
+        // token when this field is edited; ManagerAgent will use the token for
+        // reconnects and consult the code only when enrollment is required.
         if (!string.Equals(oldManagerUrl, _settings.Manager.ServerUrl, StringComparison.OrdinalIgnoreCase) || !string.Equals(oldManagerFingerprint, _settings.Manager.ServerCertificateFingerprint, StringComparison.OrdinalIgnoreCase))
         {
             _settings.Manager.AgentId = "";

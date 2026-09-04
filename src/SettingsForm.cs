@@ -186,7 +186,6 @@ public sealed class SettingsForm : ThemedForm
     public void Apply()
     {
         var oldManagerUrl = _settings.Manager.ServerUrl;
-        var oldManagerFingerprint = _settings.Manager.ServerCertificateFingerprint;
         _settings.AttachPort = int.TryParse(_port.Inner.Text.Trim(), out var port) ? port : 0;
         _settings.WorkingDirectory = string.IsNullOrWhiteSpace(_cwd.Inner.Text) ? null : _cwd.Inner.Text.Trim();
         _settings.CloseExits = _rbExit.Checked;
@@ -199,11 +198,13 @@ public sealed class SettingsForm : ThemedForm
         // PairingCode is only an enrollment secret. Keep an existing Agent
         // token when this field is edited; ManagerAgent will use the token for
         // reconnects and consult the code only when enrollment is required.
-        if (!string.Equals(oldManagerUrl, _settings.Manager.ServerUrl, StringComparison.OrdinalIgnoreCase) || !string.Equals(oldManagerFingerprint, _settings.Manager.ServerCertificateFingerprint, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(oldManagerUrl, _settings.Manager.ServerUrl, StringComparison.OrdinalIgnoreCase))
         {
+            // The Agent token belongs to the manager identity, not to the TLS
+            // verification mode. Changing only the pin must not force pairing.
             _settings.Manager.AgentId = "";
             _settings.Manager.AgentToken = "";
-            _managerStatus.Text = "服务器或指纹已变更，请重新配对";
+            _managerStatus.Text = "服务器地址已变更，请重新配对";
         }
         _settings.Save();
         _settings.ApplyAutoStart();

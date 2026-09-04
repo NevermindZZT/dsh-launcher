@@ -64,7 +64,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                _log("[Manager] 连接失败: " + ex.Message);
+                _log("[Manager] 连接失败: " + DescribeException(ex));
                 try { await Task.Delay(delay, ct); } catch (OperationCanceledException) { break; }
                 delay = TimeSpan.FromSeconds(Math.Min(30, delay.TotalSeconds * 2));
             }
@@ -84,7 +84,11 @@ public sealed class ManagerAgent : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(m.AgentId) && !string.IsNullOrWhiteSpace(m.AgentToken))
         {
             using var probeClient = CreateHttpClient();
-            using var probe = await probeClient.PostAsJsonAsync(BuildHttpUrl("/api/v1/agent/heartbeat"), new { instances = Snapshot() }, _json, ct);
+            using var probeRequest = new HttpRequestMessage(HttpMethod.Post, BuildHttpUrl("/api/v1/agent/heartbeat"));
+            probeRequest.Headers.TryAddWithoutValidation("Authorization", "Bearer " + m.AgentToken);
+            probeRequest.Headers.TryAddWithoutValidation("X-Agent-Id", m.AgentId);
+            probeRequest.Content = JsonContent.Create(new { instances = Snapshot() }, options: _json);
+            using var probe = await probeClient.SendAsync(probeRequest, ct);
             if (probe.IsSuccessStatusCode) return;
             if (probe.StatusCode != HttpStatusCode.Unauthorized && probe.StatusCode != HttpStatusCode.Forbidden)
                 throw new InvalidOperationException("Manager Agent 凭证检查失败: HTTP " + (int)probe.StatusCode);
@@ -340,14 +344,20 @@ public sealed class ManagerAgent : IAsyncDisposable
 
     private HttpClient CreateHttpClient()
     {
-        var handler = new HttpClientHandler { ServerCertificateCustomValidationCallback = ValidateCertificate };
+        var handler = new HttpClientHandler();
+        // Leave the callback unset for public CA certificates so .NET performs
+        // its normal chain and hostname validation. Only a configured pin
+        // needs the custom callback (and can therefore accept a self-signed cert).
+        if (NormalizeFingerprint(_settings.Manager.ServerCertificateFingerprint).Length > 0)
+            handler.ServerCertificateCustomValidationCallback = ValidateCertificate;
         return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
     }
     private void ConfigureSocket(ClientWebSocketOptions options)
     {
         options.SetRequestHeader("Authorization", "Bearer " + _settings.Manager.AgentToken);
         options.SetRequestHeader("X-Agent-Id", _settings.Manager.AgentId);
-        options.RemoteCertificateValidationCallback = (_, cert, _, errors) => ValidateCertificate(null, cert, null, errors);
+        if (NormalizeFingerprint(_settings.Manager.ServerCertificateFingerprint).Length > 0)
+            options.RemoteCertificateValidationCallback = (_, cert, _, errors) => ValidateCertificate(null, cert, null, errors);
     }
     private bool ValidateCertificate(HttpRequestMessage? _, System.Security.Cryptography.X509Certificates.X509Certificate? cert, System.Security.Cryptography.X509Certificates.X509Chain? __, System.Net.Security.SslPolicyErrors errors)
     {
@@ -360,6 +370,16 @@ public sealed class ManagerAgent : IAsyncDisposable
     private string BuildHttpUrl(string path) => new Uri(new Uri(_settings.Manager.ServerUrl.TrimEnd('/') + "/"), path.TrimStart('/')).ToString();
     private string BuildWebSocketUrl(string path) { var u = BuildHttpUrl(path); return u.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? "wss://" + u[8..] : "ws://" + u[7..]; }
     private static string NormalizeFingerprint(string value) => string.Concat(value.Where(char.IsLetterOrDigit)).ToUpperInvariant();
+    private static string DescribeException(Exception error)
+    {
+        var messages = new List<string>();
+        for (var current = error; current != null; current = current.InnerException)
+        {
+            if (!string.IsNullOrWhiteSpace(current.Message))
+                messages.Add(current.GetType().Name + ": " + current.Message);
+        }
+        return string.Join(" -> ", messages);
+    }
     private async Task SendAsync(ClientWebSocket socket, AgentMessage message, CancellationToken ct)
     {
         var data = JsonSerializer.SerializeToUtf8Bytes(message, _json);

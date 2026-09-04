@@ -4,5 +4,5 @@ namespace DshLauncher;
 public static class VersionHelper
 {
     public static string Current =>
-        "v" + (System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.2.10");
+        "v" + (System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.2.11");
 }

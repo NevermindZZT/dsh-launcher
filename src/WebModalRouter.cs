@@ -31,7 +31,10 @@ internal static class WebModalRouter
     {
         var p=Prop(d,"attachPort"); if(p.TryGetInt32(out var port)) s.AttachPort=port; var w=Prop(d,"workingDirectory"); if(w.ValueKind==JsonValueKind.String) s.WorkingDirectory=w.GetString();
         var ce=Prop(d,"closeExits"); if(ce.ValueKind is JsonValueKind.True or JsonValueKind.False)s.CloseExits=ce.GetBoolean(); var ast=Prop(d,"autoStart"); if(ast.ValueKind is JsonValueKind.True or JsonValueKind.False)s.AutoStart=ast.GetBoolean(); var links=Prop(d,"openLinksInWebView"); if(links.ValueKind is JsonValueKind.True or JsonValueKind.False)s.OpenLinksInWebView=links.GetBoolean();
-        var m=Prop(d,"manager"); if(m.ValueKind==JsonValueKind.Object){var v=Prop(m,"enabled");if(v.ValueKind is JsonValueKind.True or JsonValueKind.False)s.Manager.Enabled=v.GetBoolean(); s.Manager.ServerUrl=Str(m,"serverUrl");s.Manager.AgentName=Str(m,"agentName");s.Manager.PairingCode=Str(m,"pairingCode");s.Manager.ServerCertificateFingerprint=Str(m,"serverCertificateFingerprint");} s.Save();s.ApplyAutoStart();
+        var oldManagerUrl=s.Manager.ServerUrl;
+        var m=Prop(d,"manager"); if(m.ValueKind==JsonValueKind.Object){var v=Prop(m,"enabled");if(v.ValueKind is JsonValueKind.True or JsonValueKind.False)s.Manager.Enabled=v.GetBoolean(); s.Manager.ServerUrl=Str(m,"serverUrl");s.Manager.AgentName=Str(m,"agentName");s.Manager.PairingCode=Str(m,"pairingCode");s.Manager.ServerCertificateFingerprint=Str(m,"serverCertificateFingerprint");}
+        if(!string.Equals(oldManagerUrl,s.Manager.ServerUrl,StringComparison.OrdinalIgnoreCase)){s.Manager.AgentId="";s.Manager.AgentToken="";}
+        s.Save();s.ApplyAutoStart();
     }
     private static string Str(JsonElement o,string n) => (Prop(o,n).ValueKind==JsonValueKind.String ? Prop(o,n).GetString() : null) ?? "";
     private const string Script = """

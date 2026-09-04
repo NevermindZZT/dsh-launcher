@@ -137,7 +137,7 @@ public sealed class SettingsForm : ThemedForm
         panel.Controls.Add(_managerName, 1, row); row++;
         panel.Controls.Add(MkLabel("首次配对码（仅注册时使用）"), 0, row);
         panel.Controls.Add(_managerPairing, 1, row); row++;
-        panel.Controls.Add(MkLabel("TLS 指纹（64 位 SHA-256）"), 0, row);
+        panel.Controls.Add(MkLabel("TLS 指纹（可选：留空信任公共 CA）"), 0, row);
         panel.Controls.Add(_managerFingerprint, 1, row); row++;
         panel.Controls.Add(MkLabel("连接状态"), 0, row);
         panel.Controls.Add(_managerStatus, 1, row); row++;

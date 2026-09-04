@@ -1,6 +1,6 @@
 # DshLauncher — DeepSeek Harness 一键启动器
 
-![Version](https://img.shields.io/badge/version-v0.2.9-blue)
+![Version](https://img.shields.io/badge/version-v0.2.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)
@@ -70,8 +70,10 @@
 1. 在服务器运行 dsh-manager，默认 HTTP 管理端口为 `8080`，Agent HTTPS/WSS 端口为 `8443`；
 2. 打开启动器设置，启用「dsh-manager Agent」；
 3. 可信内网可填写 `http://manager.example.com:8080`；公网建议填写 `https://manager.example.com:8443`；
-4. HTTPS 模式下从 manager 启动日志复制服务器 SHA-256 指纹；
-5. 首次注册时填写 Agent 名称和配对码；HTTPS 模式还要填写 TLS 指纹。配对成功后，后续连接只使用 Agent Token；
+4. HTTPS 模式下：
+   - 自签名后端：从 manager 启动日志复制服务器 SHA-256 指纹并填入；
+   - Cloudflare Tunnel / 公共 CA 反向代理：TLS 指纹可留空，launcher 会按系统公共 CA 校验（例如 Let's Encrypt 通配符证书）；
+5. 首次注册时填写 Agent 名称和配对码；HTTPS 模式在自签名场景还要填写 TLS 指纹。配对成功后，后续连接只使用 Agent Token；
 6. 保存并重启启动器，launcher 会自动注册并保持 Agent 长连接；
 7. manager 通过 `/api/v1/instances/{agentId}/{instanceId}/commands` 可以下发 `start`、`stop`、`restart`、`sync`、`update` 命令。
 

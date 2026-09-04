@@ -76,7 +76,10 @@ public sealed class ManagerAgent : IAsyncDisposable
         var m = _settings.Manager;
         if (!Uri.TryCreate(m.ServerUrl, UriKind.Absolute, out var managerUri) || (managerUri.Scheme != Uri.UriSchemeHttp && managerUri.Scheme != Uri.UriSchemeHttps)) throw new InvalidOperationException("dsh-manager 地址必须使用 http:// 或 https://");
         var fingerprint = NormalizeFingerprint(m.ServerCertificateFingerprint);
-        if (managerUri.Scheme == Uri.UriSchemeHttps && fingerprint.Length != 64) throw new InvalidOperationException("HTTPS 模式请填写 manager 启动日志中的 64 位 SHA-256 TLS 指纹");
+        // HTTPS 指纹可选：留空时按系统信任链校验（适合 Cloudflare/公共 CA 反向代理），
+        // 非空则必须是 64 位 SHA-256，并固定到该证书（适合自签名后端）。
+        if (managerUri.Scheme == Uri.UriSchemeHttps && fingerprint.Length > 0 && fingerprint.Length != 64) throw new InvalidOperationException("TLS 指纹必须是 64 位 SHA-256，或留空以信任系统公共 CA");
+        if (managerUri.Scheme == Uri.UriSchemeHttps && fingerprint.Length == 0) _log("[Manager] HTTPS 未固定证书指纹，将按系统公共 CA 校验");
         if (managerUri.Scheme == Uri.UriSchemeHttp) _log("[Manager] 警告：当前使用 HTTP，Agent 数据可能被窃听或篡改");
         if (!string.IsNullOrWhiteSpace(m.AgentId) && !string.IsNullOrWhiteSpace(m.AgentToken))
         {

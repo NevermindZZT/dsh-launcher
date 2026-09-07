@@ -282,7 +282,7 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         var url = await readyTcs.Task; // 失败会在此抛出
         CurrentUrl = url;
         SetState(HostState.Running);
-        Log($"就绪: {url}");
+        Log($"就绪: {RedactSensitiveUrl(url)}");
         Ready?.Invoke(url);
         return url;
     }
@@ -297,7 +297,7 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
                 var line = await reader.ReadLineAsync();
                 if (line == null) break; // EOF
                 line = line.TrimEnd('\r');
-                Log("[out] " + line);
+                Log("[out] " + RedactSensitiveUrl(line));
                 // 就绪行解析：前缀匹配 + URL 解析（不依赖正则转义，更鲁棒）
                 if (!ready.Task.IsCompleted && line.StartsWith(ReadinessPrefix, StringComparison.Ordinal))
                 {
@@ -458,6 +458,16 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
 
     /// <summary>外部日志（如 npm 安装/更新输出）写入宿主日志文件并广播 LogLine（LogForm 实时显示）。</summary>
     public void AppendLog(string line) => Log(line);
+
+    private static string RedactSensitiveUrl(string value)
+    {
+        var start = value.IndexOf("http://", StringComparison.OrdinalIgnoreCase);
+        if (start < 0) start = value.IndexOf("https://", StringComparison.OrdinalIgnoreCase);
+        var candidate = start >= 0 ? value[start..].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0] : value;
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Query)) return value;
+        var redacted = uri.GetLeftPart(UriPartial.Path) + "?[redacted]";
+        return start >= 0 ? value[..start] + redacted : redacted;
+    }
 
     private void Log(string line)
     {

@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.WebSockets;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -75,12 +74,6 @@ public sealed class ManagerAgent : IAsyncDisposable
     {
         var m = _settings.Manager;
         if (!Uri.TryCreate(m.ServerUrl, UriKind.Absolute, out var managerUri) || (managerUri.Scheme != Uri.UriSchemeHttp && managerUri.Scheme != Uri.UriSchemeHttps)) throw new InvalidOperationException("dsh-manager 地址必须使用 http:// 或 https://");
-        var fingerprint = NormalizeFingerprint(m.ServerCertificateFingerprint);
-        // HTTPS 指纹可选：留空时按系统信任链校验（适合 Cloudflare/公共 CA 反向代理），
-        // 非空则必须是 64 位 SHA-256，并固定到该证书（适合自签名后端）。
-        if (managerUri.Scheme == Uri.UriSchemeHttps && fingerprint.Length > 0 && fingerprint.Length != 64) throw new InvalidOperationException("TLS 指纹必须是 64 位 SHA-256，或留空以信任系统公共 CA");
-        if (managerUri.Scheme == Uri.UriSchemeHttps && fingerprint.Length == 0) _log("[Manager] HTTPS 未固定证书指纹，将按系统公共 CA 校验");
-        if (managerUri.Scheme == Uri.UriSchemeHttp) _log("[Manager] 警告：当前使用 HTTP，Agent 数据可能被窃听或篡改");
         if (!string.IsNullOrWhiteSpace(m.AgentId) && !string.IsNullOrWhiteSpace(m.AgentToken))
         {
             using var probeClient = CreateHttpClient();
@@ -205,9 +198,11 @@ public sealed class ManagerAgent : IAsyncDisposable
             if (connection == null || string.IsNullOrWhiteSpace(connection.CurrentUrl)) throw new InvalidOperationException("dsh 实例未运行");
             using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.All };
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
-            var target = new Uri(new Uri(connection.CurrentUrl.TrimEnd('/') + "/"), request.Path.TrimStart('/'));
+            var target = request.Bootstrap && request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) && request.Path == "/"
+                ? new Uri(connection.CurrentUrl)
+                : BuildLocalHttpTarget(connection.CurrentUrl, request.Path);
             var targetOrigin = target.GetLeftPart(UriPartial.Authority);
-            _log("[Manager] 代理请求: " + request.Method + " " + request.Path + " -> " + target + " (instance=" + request.InstanceId + ")");
+            _log("[Manager] 代理请求: " + request.Method + " " + request.Path + " -> " + target.GetLeftPart(UriPartial.Path) + " (instance=" + request.InstanceId + ")");
             using var message = new HttpRequestMessage(new HttpMethod(request.Method), target);
             var bodyBytes = string.IsNullOrEmpty(request.Body) ? Array.Empty<byte>() : Convert.FromBase64String(request.Body);
             var hasContentHeaders = request.Headers.Keys.Any(k => k.StartsWith("Content-", StringComparison.OrdinalIgnoreCase));
@@ -215,6 +210,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             foreach (var pair in request.Headers)
             {
                 if (string.Equals(pair.Key, "Host", StringComparison.OrdinalIgnoreCase)) continue;
+                if (pair.Key.StartsWith("X-Dsh-Manager-", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(pair.Key, "Accept-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(pair.Key, "Origin", StringComparison.OrdinalIgnoreCase)) { message.Headers.TryAddWithoutValidation(pair.Key, targetOrigin); continue; }
                 if (string.Equals(pair.Key, "Referer", StringComparison.OrdinalIgnoreCase)) { message.Headers.TryAddWithoutValidation(pair.Key, targetOrigin + "/"); continue; }
@@ -266,6 +262,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             var target = BuildWebSocketTarget(connection.CurrentUrl, request.Path);
             var targetOrigin = new Uri(connection.CurrentUrl).GetLeftPart(UriPartial.Authority);
             local.Options.SetRequestHeader("Origin", targetOrigin);
+            if (request.Headers.TryGetValue("Cookie", out var cookie) && !string.IsNullOrWhiteSpace(cookie)) local.Options.SetRequestHeader("Cookie", cookie);
             await local.ConnectAsync(new Uri(target), ct);
             var tunnel = new ProxySocket(local);
             if (!_proxySockets.TryAdd(request.RequestId, tunnel)) { local.Abort(); throw new InvalidOperationException("重复的 WebSocket tunnel"); }
@@ -323,9 +320,15 @@ public sealed class ManagerAgent : IAsyncDisposable
         }
     }
 
+    private static Uri BuildLocalHttpTarget(string baseUrl, string path)
+    {
+        var baseUri = new Uri(baseUrl);
+        var origin = new Uri(baseUri.GetLeftPart(UriPartial.Authority) + "/");
+        return string.IsNullOrEmpty(path) || path == "/" ? origin : new Uri(origin, path.TrimStart('/'));
+    }
     private static string BuildWebSocketTarget(string baseUrl, string path)
     {
-        var uri = new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), path.TrimStart('/'));
+        var uri = BuildLocalHttpTarget(baseUrl, path);
         var scheme = uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws";
         return new UriBuilder(uri) { Scheme = scheme }.Uri.ToString();
     }
@@ -339,37 +342,23 @@ public sealed class ManagerAgent : IAsyncDisposable
 
     private List<ManagerInstance> Snapshot() => _connections.Connections.Select(c => new ManagerInstance
     {
-        InstanceId = ConnectionManager.IdOf(c), DisplayName = c.DisplayName, Type = c.IsRemote ? "ssh" : "local", State = c.State.ToString().ToLowerInvariant(), URLAvailable = !string.IsNullOrWhiteSpace(c.CurrentUrl)
+        InstanceId = ConnectionManager.IdOf(c), DisplayName = c.DisplayName, Type = c.IsRemote ? "ssh" : "local", State = c.State.ToString().ToLowerInvariant(), URLAvailable = !string.IsNullOrWhiteSpace(c.CurrentUrl), StartupUrl = StartupUrlOf(c.CurrentUrl)
     }).ToList();
-
-    private HttpClient CreateHttpClient()
+    private static string? StartupUrlOf(string? value)
     {
-        var handler = new HttpClientHandler();
-        // Leave the callback unset for public CA certificates so .NET performs
-        // its normal chain and hostname validation. Only a configured pin
-        // needs the custom callback (and can therefore accept a self-signed cert).
-        if (NormalizeFingerprint(_settings.Manager.ServerCertificateFingerprint).Length > 0)
-            handler.ServerCertificateCustomValidationCallback = ValidateCertificate;
-        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return null;
+        var hasToken = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries).Any(x => x.StartsWith("token=", StringComparison.OrdinalIgnoreCase) && x.Length > 6);
+        return hasToken ? uri.ToString() : null;
     }
+
+    private HttpClient CreateHttpClient() => new(new HttpClientHandler()) { Timeout = TimeSpan.FromSeconds(30) };
     private void ConfigureSocket(ClientWebSocketOptions options)
     {
         options.SetRequestHeader("Authorization", "Bearer " + _settings.Manager.AgentToken);
         options.SetRequestHeader("X-Agent-Id", _settings.Manager.AgentId);
-        if (NormalizeFingerprint(_settings.Manager.ServerCertificateFingerprint).Length > 0)
-            options.RemoteCertificateValidationCallback = (_, cert, _, errors) => ValidateCertificate(null, cert, null, errors);
-    }
-    private bool ValidateCertificate(HttpRequestMessage? _, System.Security.Cryptography.X509Certificates.X509Certificate? cert, System.Security.Cryptography.X509Certificates.X509Chain? __, System.Net.Security.SslPolicyErrors errors)
-    {
-        var expected = NormalizeFingerprint(_settings.Manager.ServerCertificateFingerprint);
-        if (string.IsNullOrWhiteSpace(expected)) return errors == System.Net.Security.SslPolicyErrors.None;
-        if (cert == null) return false;
-        var actual = Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()));
-        return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
     }
     private string BuildHttpUrl(string path) => new Uri(new Uri(_settings.Manager.ServerUrl.TrimEnd('/') + "/"), path.TrimStart('/')).ToString();
     private string BuildWebSocketUrl(string path) { var u = BuildHttpUrl(path); return u.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? "wss://" + u[8..] : "ws://" + u[7..]; }
-    private static string NormalizeFingerprint(string value) => string.Concat(value.Where(char.IsLetterOrDigit)).ToUpperInvariant();
     private static string DescribeException(Exception error)
     {
         var messages = new List<string>();
@@ -391,8 +380,8 @@ public sealed class ManagerAgent : IAsyncDisposable
     private sealed class EnrollResponse { public string AgentId { get; set; } = ""; public string AgentToken { get; set; } = ""; }
     private sealed class AgentMessage { public string Type { get; set; } = ""; public string AgentType { get; set; } = ""; public string AgentVersion { get; set; } = ""; public string PluginVersion { get; set; } = ""; public string[]? Capabilities { get; set; } public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public bool? OK { get; set; } public string? Error { get; set; } public int Status { get; set; } public Dictionary<string,string>? Headers { get; set; } public List<string>? SetCookies { get; set; } public string? Body { get; set; } public string FrameType { get; set; } = ""; public List<ManagerInstance>? Instances { get; set; } }
     private sealed class ManagerCommand { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Action { get; set; } = ""; }
-    private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; }
-    private sealed class ManagerProxyWebSocketOpen { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Path { get; set; } = "/"; }
+    private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; public bool Bootstrap { get; set; } }
+    private sealed class ManagerProxyWebSocketOpen { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); }
     private sealed class ManagerProxyWebSocketFrame { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string FrameType { get; set; } = "text"; public string? Body { get; set; } public string? Error { get; set; } }
-    private sealed class ManagerInstance { public string InstanceId { get; set; } = ""; public string DisplayName { get; set; } = ""; public string Type { get; set; } = ""; public string State { get; set; } = ""; public bool URLAvailable { get; set; } }
+    private sealed class ManagerInstance { public string InstanceId { get; set; } = ""; public string DisplayName { get; set; } = ""; public string Type { get; set; } = ""; public string State { get; set; } = ""; public bool URLAvailable { get; set; } public string? StartupUrl { get; set; } }
 }

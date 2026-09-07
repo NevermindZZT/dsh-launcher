@@ -11,7 +11,6 @@ public sealed class ManagerSettings
     public string AgentName { get; set; } = Environment.MachineName;
     public string AgentId { get; set; } = "";
     public string PairingCode { get; set; } = "";
-    public string ServerCertificateFingerprint { get; set; } = "";
     public string? AgentTokenProtected { get; set; }
 
     [JsonIgnore]

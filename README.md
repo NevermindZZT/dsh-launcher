@@ -1,6 +1,8 @@
 # DshLauncher — DeepSeek Harness 一键启动器
 
-![Version](https://img.shields.io/badge/version-v0.2.11-blue)
+> **Manager transport migration:** dsh-manager now uses one plain HTTP upstream port and does not use private certificates or TLS fingerprints. Use `http://` only on trusted private networks; for public access configure HTTPS/WSS at an external reverse proxy. DSH 0.1.2-rc.1 startup URLs carry a one-time token; DshLauncher keeps it in memory for initial navigation and redacts it from launcher logs.
+
+![Version](https://img.shields.io/badge/version-v0.3.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)
@@ -28,7 +30,7 @@
 - **配置与插件同步**：本地 dsh 配置（`settings.yaml` 等）与已装插件一键同步到服务器，不用逐个重装
 - **dsh-manager Agent**：可注册到自托管 Go manager，统一上报本地与 SSH 实例状态，并接受远程启动 / 停止 / 重启 / 同步 / 更新命令
 - **dsh 直连插件**：不使用 launcher 时，可在 dsh 内安装 [dsh-manager-plugin](https://github.com/NevermindZZT/dsh-manager-plugin)，直接建立 manager 反向连接
-- **Agent 通道**：支持 HTTP/WS（可信内网）和 HTTPS/WSS（推荐），HTTPS 可使用自签名证书指纹固定，Agent Token 使用 Windows DPAPI 保护
+- **Agent 通道**：manager 使用单一 HTTP/WS 端口；公网 HTTPS/WSS 由外部反向代理终止，Agent Token 使用 Windows DPAPI 保护
 - **快捷键**：`Ctrl+Shift+R/L/P/S/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
 
 ## 类似项目对比
@@ -56,6 +58,8 @@
 
 ### 3. SSH 远程连接
 
+对于 DSH 0.1.2-rc.1，launcher 会捕获远端 `dsh web:` 启动 URL 中的 token，并只在当前内存会话中改写为本地转发地址；日志会隐藏 token。旧的、已运行但没有可恢复 startup token 的远端 dsh 需要先停止后重新由 launcher 启动。
+
 1. **准备服务器**：安装 Node.js 与 dsh（`npm install -g @deepseek-ai/dsh`）
 2. **添加连接**：设置 → SSH 连接 → 新增（或从「系统 SSH 配置」导入 `~/.ssh/config` 已有主机）
    - 认证：推荐密钥（点「生成密钥」→「复制公钥」粘贴到服务器 `~/.ssh/authorized_keys`），或直接填密码
@@ -67,15 +71,12 @@
 
 ### 4. dsh-manager 远程管理
 
-1. 在服务器运行 dsh-manager，默认 HTTP 管理端口为 `8080`，Agent HTTPS/WSS 端口为 `8443`；
+1. 在服务器运行 dsh-manager，默认 manager HTTP 端口为 `8080`（Docker Compose 示例使用 `10090`）；
 2. 打开启动器设置，启用「dsh-manager Agent」；
-3. 可信内网可填写 `http://manager.example.com:8080`；公网建议填写 `https://manager.example.com:8443`；
-4. HTTPS 模式下：
-   - 自签名后端：从 manager 启动日志复制服务器 SHA-256 指纹并填入；
-   - Cloudflare Tunnel / 公共 CA 反向代理：TLS 指纹可留空，launcher 会按系统公共 CA 校验（例如 Let's Encrypt 通配符证书）；
-5. 首次注册时填写 Agent 名称和配对码；HTTPS 模式在自签名场景还要填写 TLS 指纹。配对成功后，后续连接只使用 Agent Token；
-6. 保存并重启启动器，launcher 会自动注册并保持 Agent 长连接；
-7. manager 通过 `/api/v1/instances/{agentId}/{instanceId}/commands` 可以下发 `start`、`stop`、`restart`、`sync`、`update` 命令。
+3. 可信内网填写 `http://manager.example.com:8080`；公网填写外部 HTTPS 反向代理地址，例如 `https://manager.example.com`；
+4. 不需要配置 TLS 指纹。首次注册时填写 Agent 名称和 pairing code，配对成功后后续连接只使用 Agent Token；
+5. 保存并重启启动器，launcher 会自动注册并保持 Agent 长连接；
+6. manager 通过 `/api/v1/instances/{agentId}/{instanceId}/commands` 可以下发 `start`、`stop`、`restart`、`sync`、`update` 命令。
 
 Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文写入 launcher 设置文件。manager Dashboard 已支持通过浏览器会话打开指定实例的原生 dsh Web UI，并转发普通 HTTP 与 WebSocket 会话。
 

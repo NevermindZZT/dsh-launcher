@@ -489,12 +489,12 @@ public sealed class MainForm : Form
     private void Navigate(string url)
     {
         if (_quitting || _web.CoreWebView2 == null) return;
-        _host.AppendLog("导航到: " + url);
         var target = new Uri(url);
+        _host.AppendLog("导航到: " + target.GetLeftPart(UriPartial.Path) + (string.IsNullOrEmpty(target.Query) ? "" : "?[redacted]"));
         var sameOrigin = _web.Source != null
             && string.Equals(_web.Source.GetLeftPart(UriPartial.Authority),
                 target.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
-        if (sameOrigin)
+        if (sameOrigin && string.IsNullOrEmpty(target.Query))
         {
             _web.Reload();
         }

@@ -21,7 +21,6 @@ public sealed class SshConnection : IDshConnection, IDisposable
     private bool _disposed;
     // 操作互斥锁：防止并发 Start/Restart（重复按键或重复触发导致多隧道/多启动）
     private readonly SemaphoreSlim _opLock = new(1, 1);
-    private static readonly TimeSpan ReadyTimeout = TimeSpan.FromSeconds(60);
 
     public bool IsRemote => true;
     public SshConnectionConfig Config => _config;
@@ -90,7 +89,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
             if (int.TryParse(recorded, out var rp) && rp > 0)
             {
                 var code = _runner.Exec($"curl -s -o /dev/null -w '%{{http_code}}' --max-time 2 http://127.0.0.1:{rp}/ || echo 000", 20).Trim();
-                if (code == "200") return rp;
+                if (code == "200" || code == "401") return rp;
             }
             // 2) systemd service active？读 ExecStart 端口
             var active = _runner.Exec("systemctl --user is-active dsh-launcher 2>/dev/null || echo inactive", 20).Trim();
@@ -114,20 +113,22 @@ public sealed class SshConnection : IDshConnection, IDisposable
         var port = r.Trim().Split('\n')[0].Trim();
         return int.TryParse(port, out var p) && p > 0 ? p : 3080;
     }
-    /// <summary>本地探测转发端口是否已是可用的 dsh（HTTP 200 + dsh 标记）。</summary>
-    private static async Task<bool> IsLocalReadyAsync(int port)
+    private static async Task<int> ProbeLocalStatusAsync(int port)
     {
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
             using var resp = await client.GetAsync($"http://127.0.0.1:{port}/");
-            if (!resp.IsSuccessStatusCode) return false;
-            var html = await resp.Content.ReadAsStringAsync();
-            return html.Length > 0
-                && (html.Contains("__DSH_BOOT__", StringComparison.OrdinalIgnoreCase)
-                    || html.Contains("DeepSeek Harness", StringComparison.OrdinalIgnoreCase));
+            return (int)resp.StatusCode;
         }
-        catch { return false; }
+        catch { return 0; }
+    }
+
+    private static async Task<bool> IsLocalReadyAsync(int port) => await ProbeLocalStatusAsync(port) == 200;
+    private static async Task<bool> IsLocalReachableAsync(int port)
+    {
+        var status = await ProbeLocalStatusAsync(port);
+        return status == 200 || status == 401;
     }
 
     public async Task<string> StartAsync(CancellationToken ct = default)
@@ -165,53 +166,73 @@ public sealed class SshConnection : IDshConnection, IDisposable
         _tunnel.Exited += (_, _) => _ = OnTunnelExitedAsync();
         Log($"隧道已建立: 127.0.0.1:{localPort} <- 远端 127.0.0.1:{remotePort} (pid {_tunnel.Id})");
 
-        // 4) 等待本地转发端口就绪；未就绪则启动远端 dsh（用解析出的 remotePort）
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTime.UtcNow < deadline && !await IsLocalReadyAsync(localPort))
+        // 4) 探测本地转发：200 = 旧版/已认证 dsh，401 = DSH 0.1.2 需要 startup token，0 = 未启动。
+        var localStatus = await ProbeLocalStatusAsync(localPort);
+        string? remoteStartupUrl = null;
+        if (localStatus == 200)
         {
-            ct.ThrowIfCancellationRequested();
-            await Task.Delay(500, ct);
+            _localUrl = $"http://127.0.0.1:{localPort}";
+            SetState(HostState.Running);
+            Log($"远端 dsh 就绪: {RedactUrl(_localUrl)}");
+            Ready?.Invoke(_localUrl);
+            return _localUrl;
         }
-        if (!await IsLocalReadyAsync(localPort))
+
+        try
         {
-            Log("远端 dsh 未运行，正在启动…");
-            try
+            if (localStatus == 401)
             {
+                Log("远端 dsh 已运行但需要 startup token，尝试读取远端启动 URL…");
+                remoteStartupUrl = RemoteDshManager.TryReadStartupUrl(_runner, remotePort);
+            }
+            else
+            {
+                Log("远端 dsh 未运行，正在启动…");
                 var method = await Task.Run(() => RemoteDshManager.StartRemote(_runner, _config, remotePort, Log), ct);
                 Log($"远端启动方式: {method}");
-                // 记录实际端口（供下次复用同一实例）
                 _runner.Exec($"mkdir -p ~/.dsh-launcher && echo {remotePort} > ~/.dsh-launcher/dsh.port", 20);
             }
-            catch (Exception ex)
+
+            if (string.IsNullOrWhiteSpace(remoteStartupUrl))
             {
-                Log("远端启动失败: " + ex.Message);
-                _tunnel?.Kill(entireProcessTree: true);
-                _tunnel = null;
-                SetState(HostState.Failed);
-                throw;
+                remoteStartupUrl = await Task.Run(() => RemoteDshManager.WaitForStartupUrl(_runner, remotePort, Log), ct);
             }
         }
-
-        // 4) 等待就绪（轮询本地转发端口）
-        deadline = DateTime.UtcNow + ReadyTimeout;
-        while (DateTime.UtcNow < deadline)
+        catch (Exception ex)
         {
-            ct.ThrowIfCancellationRequested();
-            if (await IsLocalReadyAsync(localPort))
-            {
-                _localUrl = $"http://127.0.0.1:{localPort}";
-                SetState(HostState.Running);
-                Log($"远端 dsh 就绪: {_localUrl}");
-                Ready?.Invoke(_localUrl);
-                return _localUrl;
-            }
-            await Task.Delay(1000, ct);
+            Log("远端 dsh 启动或 startup token 获取失败: " + ex.Message);
+            _tunnel?.Kill(entireProcessTree: true);
+            _tunnel = null;
+            SetState(HostState.Failed);
+            throw;
         }
 
-        _tunnel?.Kill(entireProcessTree: true);
-        _tunnel = null;
-        SetState(HostState.Failed);
-        throw new TimeoutException($"远端 dsh 在 {ReadyTimeout.TotalSeconds}s 内未就绪");
+        if (string.IsNullOrWhiteSpace(remoteStartupUrl))
+        {
+            _tunnel?.Kill(entireProcessTree: true);
+            _tunnel = null;
+            SetState(HostState.Failed);
+            throw new InvalidOperationException("远端 dsh 已运行，但没有可用的 startup token；请停止远端 dsh 后重新连接");
+        }
+
+        _localUrl = RebaseStartupUrl(remoteStartupUrl, localPort);
+        SetState(HostState.Running);
+        Log($"远端 dsh startup URL 已捕获: {RedactUrl(_localUrl)}");
+        Ready?.Invoke(_localUrl);
+        return _localUrl;
+    }
+
+    private static string RebaseStartupUrl(string remoteUrl, int localPort)
+    {
+        var remote = new Uri(remoteUrl);
+        var local = new UriBuilder(remote) { Host = "127.0.0.1", Port = localPort };
+        return local.Uri.ToString();
+    }
+
+    private static string RedactUrl(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return value;
+        return uri.GetLeftPart(UriPartial.Path) + (string.IsNullOrEmpty(uri.Query) ? "" : "?[redacted]");
     }
 
     /// <summary>隧道进程意外退出时的自动重连（最多 3 次，每次间隔递增）。</summary>
@@ -228,7 +249,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
                 _tunnel = _runner.StartTunnel(_localPort, _remotePort);
                 _tunnel.EnableRaisingEvents = true;
                 _tunnel.Exited += (_, _) => _ = OnTunnelExitedAsync();
-                if (await IsLocalReadyAsync(_localPort))
+                if (await IsLocalReachableAsync(_localPort))
                 {
                     Log("自动重连成功");
                     Ready?.Invoke(_localUrl ?? $"http://127.0.0.1:{_localPort}");

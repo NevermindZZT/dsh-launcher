@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace DshLauncher;
 
@@ -64,9 +65,41 @@ public static class RemoteDshManager
         try
         {
             var code = runner.Exec($"curl -s -o /dev/null -w '%{{http_code}}' --max-time 3 http://127.0.0.1:{port}/ || echo 000", 15);
-            return code.Trim() == "200";
+            return code.Trim() is "200" or "401";
         }
         catch { return false; }
+    }
+
+    public static string? TryReadStartupUrl(SshRunner runner, int remotePort)
+    {
+        try
+        {
+            var raw = runner.Exec("grep 'dsh web:' ~/.dsh-launcher/dsh-web.log 2>/dev/null | tail -1 | sed -n 's/.*dsh web: \\(http[^ ]*\\).*/\\1/p' || true", 15).Trim();
+            return ParseStartupUrl(raw, remotePort);
+        }
+        catch { return null; }
+    }
+
+    public static string WaitForStartupUrl(SshRunner runner, int remotePort, Action<string> log)
+    {
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            var parsed = TryReadStartupUrl(runner, remotePort);
+            if (parsed != null)
+            {
+                log("已从远端 dsh 启动日志捕获 startup token（token 已隐藏）");
+                return parsed;
+            }
+            Thread.Sleep(1000);
+        }
+        throw new TimeoutException("远端 dsh 已启动，但在日志中未找到 startup token URL");
+    }
+
+    private static string? ParseStartupUrl(string raw, int remotePort)
+    {
+        var match = Regex.Match(raw, @"https?://127\.0\.0\.1:(\d+)/\?token=([^\s]+)", RegexOptions.IgnoreCase);
+        if (!match.Success || !int.TryParse(match.Groups[1].Value, out var port) || port != remotePort) return null;
+        return match.Value.TrimEnd('\r', '\n', ',', ')');
     }
 
     /// <summary>尝试 launchctl（macOS）启动；非 Darwin 或失败返回 false。</summary>
@@ -131,11 +164,13 @@ Type=simple
 ExecStart={node} {dshBin} web --host 127.0.0.1 --port {remotePort} --no-open
 Restart=on-failure
 RestartSec=3
+StandardOutput=append:%h/.dsh-launcher/dsh-web.log
+StandardError=append:%h/.dsh-launcher/dsh-web.log
 
 [Install]
 WantedBy=default.target";
             var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(service));
-            var setup = $"mkdir -p ~/.config/systemd/user && echo {b64} | base64 -d > ~/.config/systemd/user/{ServiceUnit} && systemctl --user daemon-reload && systemctl --user enable --now {ServiceUnit} 2>&1 && echo systemd-ok";
+            var setup = $"mkdir -p ~/.config/systemd/user ~/.dsh-launcher && echo {b64} | base64 -d > ~/.config/systemd/user/{ServiceUnit} && systemctl --user daemon-reload && systemctl --user enable --now {ServiceUnit} 2>&1 && systemctl --user restart {ServiceUnit} 2>&1 && echo systemd-ok";
             var result = runner.Exec(setup);
             if (result.Contains("systemd-ok"))
             {

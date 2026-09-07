@@ -26,7 +26,6 @@ public sealed class SettingsForm : ThemedForm
     private readonly InputBox _managerUrl = new(34);
     private readonly InputBox _managerName = new(34);
     private readonly InputBox _managerPairing = new(34);
-    private readonly InputBox _managerFingerprint = new(34);
     private readonly Label _managerStatus = new() { AutoSize = true, Tag = "muted" };
     private readonly RoundedButton _btnSave = new() { Text = "保存", DialogResult = DialogResult.OK, Width = 96, Height = 36 };
     private readonly RoundedButton _btnCancel = new() { Text = "取消", DialogResult = DialogResult.Cancel, Width = 96, Height = 36 };
@@ -66,7 +65,6 @@ public sealed class SettingsForm : ThemedForm
         _managerUrl.Inner.Text = settings.Manager.ServerUrl;
         _managerName.Inner.Text = settings.Manager.AgentName;
         _managerPairing.Inner.Text = settings.Manager.PairingCode;
-        _managerFingerprint.Inner.Text = settings.Manager.ServerCertificateFingerprint;
         _managerStatus.Text = string.IsNullOrWhiteSpace(settings.Manager.AgentId) ? "尚未配对" : "已配对：" + settings.Manager.AgentId;
 
         // SSH 连接列表（多连接；本地连接始终存在）
@@ -137,8 +135,6 @@ public sealed class SettingsForm : ThemedForm
         panel.Controls.Add(_managerName, 1, row); row++;
         panel.Controls.Add(MkLabel("首次配对码（仅注册时使用）"), 0, row);
         panel.Controls.Add(_managerPairing, 1, row); row++;
-        panel.Controls.Add(MkLabel("TLS 指纹（可选：留空信任公共 CA）"), 0, row);
-        panel.Controls.Add(_managerFingerprint, 1, row); row++;
         panel.Controls.Add(MkLabel("连接状态"), 0, row);
         panel.Controls.Add(_managerStatus, 1, row); row++;
 
@@ -194,7 +190,6 @@ public sealed class SettingsForm : ThemedForm
         _settings.Manager.ServerUrl = _managerUrl.Inner.Text.Trim();
         _settings.Manager.AgentName = _managerName.Inner.Text.Trim();
         _settings.Manager.PairingCode = _managerPairing.Inner.Text.Trim();
-        _settings.Manager.ServerCertificateFingerprint = _managerFingerprint.Inner.Text.Trim();
         // PairingCode is only an enrollment secret. Keep an existing Agent
         // token when this field is edited; ManagerAgent will use the token for
         // reconnects and consult the code only when enrollment is required.

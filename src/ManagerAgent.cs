@@ -92,7 +92,7 @@ public sealed class ManagerAgent : IAsyncDisposable
         }
         if (string.IsNullOrWhiteSpace(m.PairingCode)) throw new InvalidOperationException("Manager 尚未配置 Agent 配对码");
         using var client = CreateHttpClient();
-        var payload = new { pairingCode = m.PairingCode, name = string.IsNullOrWhiteSpace(m.AgentName) ? Environment.MachineName : m.AgentName, platform = "windows", launcherVersion = VersionHelper.Current, agentType = "launcher", agentVersion = VersionHelper.Current, capabilities = new[] { "command", "proxy.http", "proxy.websocket" } };
+        var payload = new { pairingCode = m.PairingCode, name = string.IsNullOrWhiteSpace(m.AgentName) ? Environment.MachineName : m.AgentName, platform = "windows", launcherVersion = VersionHelper.Current, agentType = "launcher", agentVersion = VersionHelper.Current, capabilities = new[] { "command", "proxy.http", "proxy.websocket", "proxy.binary-response-v1" } };
         using var response = await client.PostAsJsonAsync(BuildHttpUrl("/api/v1/agents/enroll"), payload, _json, ct);
         var text = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException("Agent 配对失败: " + text);
@@ -111,7 +111,7 @@ public sealed class ManagerAgent : IAsyncDisposable
         var uri = new Uri(BuildWebSocketUrl("/api/v1/agent/connect"));
         await socket.ConnectAsync(uri, ct);
         _log("[Manager] Agent 通道已连接");
-        await SendAsync(socket, new AgentMessage { Type = "register", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = new[] { "command", "proxy.http", "proxy.websocket" }, Instances = Snapshot() }, ct);
+        await SendAsync(socket, new AgentMessage { Type = "register", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = new[] { "command", "proxy.http", "proxy.websocket", "proxy.binary-response-v1" }, Instances = Snapshot() }, ct);
         var receive = ReceiveLoopAsync(socket, ct);
         try
         {
@@ -119,7 +119,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             {
                 var completed = await Task.WhenAny(receive, Task.Delay(TimeSpan.FromSeconds(15), ct));
                 if (completed == receive) { await receive; break; }
-                await SendAsync(socket, new AgentMessage { Type = "heartbeat", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = new[] { "command", "proxy.http", "proxy.websocket" }, Instances = Snapshot() }, ct);
+                await SendAsync(socket, new AgentMessage { Type = "heartbeat", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = new[] { "command", "proxy.http", "proxy.websocket", "proxy.binary-response-v1" }, Instances = Snapshot() }, ct);
             }
         }
         finally
@@ -192,16 +192,19 @@ public sealed class ManagerAgent : IAsyncDisposable
     private async Task ExecuteProxyRequestAsync(ClientWebSocket socket, ManagerProxyRequest request, CancellationToken ct)
     {
         var result = new AgentMessage { Type = "proxy_response", RequestId = request.RequestId };
+        byte[]? binaryBody = null;
         try
         {
             var connection = _connections.Connections.FirstOrDefault(c => ConnectionManager.IdOf(c) == request.InstanceId);
             if (connection == null || string.IsNullOrWhiteSpace(connection.CurrentUrl)) throw new InvalidOperationException("dsh 实例未运行");
-            using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.All };
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+            using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.None };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
             var target = request.Bootstrap && request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) && request.Path == "/"
                 ? new Uri(connection.CurrentUrl)
                 : BuildLocalHttpTarget(connection.CurrentUrl, request.Path);
             var targetOrigin = target.GetLeftPart(UriPartial.Authority);
+            var acceptedEncoding = request.Headers.TryGetValue("Accept-Encoding", out var requestEncoding) ? requestEncoding : "";
+            var acceptsGzip = acceptedEncoding.Contains("gzip", StringComparison.OrdinalIgnoreCase);
             _log("[Manager] 代理请求: " + request.Method + " " + request.Path + " -> " + target.GetLeftPart(UriPartial.Path) + " (instance=" + request.InstanceId + ")");
             using var message = new HttpRequestMessage(new HttpMethod(request.Method), target);
             var bodyBytes = string.IsNullOrEmpty(request.Body) ? Array.Empty<byte>() : Convert.FromBase64String(request.Body);
@@ -221,7 +224,7 @@ public sealed class ManagerAgent : IAsyncDisposable
                 }
                 message.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
             }
-            message.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+            message.Headers.TryAddWithoutValidation("Accept-Encoding", acceptsGzip ? "gzip" : "identity");
             using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
             result.Status = (int)response.StatusCode;
             result.Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -229,17 +232,18 @@ public sealed class ManagerAgent : IAsyncDisposable
             {
                 if (string.Equals(header.Key, "Set-Cookie", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(header.Key, "Content-Length", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(header.Key, "Content-Encoding", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(header.Key, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
                 if (!result.Headers.ContainsKey(header.Key)) result.Headers[header.Key] = string.Join(", ", header.Value);
             }
             if (response.Headers.TryGetValues("Set-Cookie", out var setCookies))
                 result.SetCookies = setCookies.ToList();
             var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
-            result.Body = Convert.ToBase64String(responseBytes);
+            if (request.BinaryResponse) binaryBody = responseBytes;
+            else result.Body = Convert.ToBase64String(responseBytes);
             _log("[Manager] 代理响应: " + request.Method + " " + request.Path + " HTTP " + (int)response.StatusCode + " bytes=" + responseBytes.Length + " cookies=" + (result.SetCookies?.Count ?? 0));
-            if (request.Path.StartsWith("/api/session", StringComparison.OrdinalIgnoreCase)
+            if ((request.Path.StartsWith("/api/session", StringComparison.OrdinalIgnoreCase)
                 || request.Path.StartsWith("/api/workspace", StringComparison.OrdinalIgnoreCase))
+                && !result.Headers.ContainsKey("Content-Encoding"))
             {
                 var preview = Encoding.UTF8.GetString(responseBytes);
                 if (preview.Length > 1200) preview = preview[..1200] + "…";
@@ -247,7 +251,14 @@ public sealed class ManagerAgent : IAsyncDisposable
             }
         }
         catch (Exception ex) { result.Status = 502; result.Error = ex.Message; }
-        try { await SendAsync(socket, result, ct); } catch (Exception ex) { _log("[Manager] 返回代理结果失败: " + ex.Message); }
+        try
+        {
+            if (request.BinaryResponse && binaryBody != null && string.IsNullOrEmpty(result.Error))
+                await SendProxyResponseBinaryAsync(socket, result, binaryBody, ct);
+            else
+                await SendAsync(socket, result, ct);
+        }
+        catch (Exception ex) { _log("[Manager] 返回代理结果失败: " + ex.Message); }
     }
 
 
@@ -369,6 +380,20 @@ public sealed class ManagerAgent : IAsyncDisposable
         }
         return string.Join(" -> ", messages);
     }
+    private async Task SendProxyResponseBinaryAsync(ClientWebSocket socket, AgentMessage message, byte[] body, CancellationToken ct)
+    {
+        message.Type = "proxy_response_binary";
+        message.Body = null;
+        var header = JsonSerializer.SerializeToUtf8Bytes(message, _json);
+        var data = new byte[header.Length + 1 + body.Length];
+        Buffer.BlockCopy(header, 0, data, 0, header.Length);
+        data[header.Length] = (byte)'\n';
+        Buffer.BlockCopy(body, 0, data, header.Length + 1, body.Length);
+        await _sendGate.WaitAsync(ct);
+        try { await socket.SendAsync(data, WebSocketMessageType.Binary, true, ct); }
+        finally { _sendGate.Release(); }
+    }
+
     private async Task SendAsync(ClientWebSocket socket, AgentMessage message, CancellationToken ct)
     {
         var data = JsonSerializer.SerializeToUtf8Bytes(message, _json);
@@ -380,7 +405,7 @@ public sealed class ManagerAgent : IAsyncDisposable
     private sealed class EnrollResponse { public string AgentId { get; set; } = ""; public string AgentToken { get; set; } = ""; }
     private sealed class AgentMessage { public string Type { get; set; } = ""; public string AgentType { get; set; } = ""; public string AgentVersion { get; set; } = ""; public string PluginVersion { get; set; } = ""; public string[]? Capabilities { get; set; } public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public bool? OK { get; set; } public string? Error { get; set; } public int Status { get; set; } public Dictionary<string,string>? Headers { get; set; } public List<string>? SetCookies { get; set; } public string? Body { get; set; } public string FrameType { get; set; } = ""; public List<ManagerInstance>? Instances { get; set; } }
     private sealed class ManagerCommand { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Action { get; set; } = ""; }
-    private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; public bool Bootstrap { get; set; } }
+    private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; public bool Bootstrap { get; set; } public bool BinaryResponse { get; set; } }
     private sealed class ManagerProxyWebSocketOpen { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); }
     private sealed class ManagerProxyWebSocketFrame { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string FrameType { get; set; } = "text"; public string? Body { get; set; } public string? Error { get; set; } }
     private sealed class ManagerInstance { public string InstanceId { get; set; } = ""; public string DisplayName { get; set; } = ""; public string Type { get; set; } = ""; public string State { get; set; } = ""; public bool URLAvailable { get; set; } public string? StartupUrl { get; set; } }

@@ -17,6 +17,20 @@ public sealed class ManagerAgent : IAsyncDisposable
     private Task? _loop;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly ConcurrentDictionary<string, ProxySocket> _proxySockets = new();
+    private readonly ConcurrentDictionary<string, HttpClient> _proxyHttpClients = new();
+    private readonly ConcurrentDictionary<string, ProxyHttpOperation> _proxyHttpOperations = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _proxyHttpGate = new(MaxConcurrentProxyHttpOperations, MaxConcurrentProxyHttpOperations);
+    private static readonly string[] AgentCapabilities = [
+        "command", "proxy.http", "proxy.websocket", "proxy.binary-response-v1",
+        "proxy.http-stream-v1", "proxy.binary-websocket-frame-v1", "proxy.cancel-v1"
+    ];
+    // The manager enables streamed responses only for immutable non-JavaScript
+    // assets. DSH data/control endpoints retain the established HTTP transport.
+    private const int ProxyBufferSize = 64 * 1024;
+    private const int MaxConcurrentProxyHttpOperations = 16;
+    private const int MaxProxyRequestBodyBytes = 8 * 1024 * 1024;
+    private const int MaxProxyResponseBytes = 32 * 1024 * 1024;
+    private static readonly TimeSpan ProxyHttpTimeout = TimeSpan.FromSeconds(60);
 
     public ManagerAgent(AppSettings settings, ConnectionManager connections, Action<string>? log = null)
     {
@@ -44,9 +58,12 @@ public sealed class ManagerAgent : IAsyncDisposable
     {
         if (_stop == null) return;
         _stop.Cancel();
+        foreach (var operation in _proxyHttpOperations.Values) operation.Cancel();
         if (_loop != null) { try { await _loop; } catch { } }
         _stop.Dispose();
         _stop = null;
+        foreach (var client in _proxyHttpClients.Values) client.Dispose();
+        _proxyHttpClients.Clear();
     }
 
     private async Task RunLoopAsync(CancellationToken ct)
@@ -92,7 +109,7 @@ public sealed class ManagerAgent : IAsyncDisposable
         }
         if (string.IsNullOrWhiteSpace(m.PairingCode)) throw new InvalidOperationException("Manager 尚未配置 Agent 配对码");
         using var client = CreateHttpClient();
-        var payload = new { pairingCode = m.PairingCode, name = string.IsNullOrWhiteSpace(m.AgentName) ? Environment.MachineName : m.AgentName, platform = "windows", launcherVersion = VersionHelper.Current, agentType = "launcher", agentVersion = VersionHelper.Current, capabilities = new[] { "command", "proxy.http", "proxy.websocket", "proxy.binary-response-v1" } };
+        var payload = new { pairingCode = m.PairingCode, name = string.IsNullOrWhiteSpace(m.AgentName) ? Environment.MachineName : m.AgentName, platform = "windows", launcherVersion = VersionHelper.Current, agentType = "launcher", agentVersion = VersionHelper.Current, capabilities = AgentCapabilities };
         using var response = await client.PostAsJsonAsync(BuildHttpUrl("/api/v1/agents/enroll"), payload, _json, ct);
         var text = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException("Agent 配对失败: " + text);
@@ -111,7 +128,7 @@ public sealed class ManagerAgent : IAsyncDisposable
         var uri = new Uri(BuildWebSocketUrl("/api/v1/agent/connect"));
         await socket.ConnectAsync(uri, ct);
         _log("[Manager] Agent 通道已连接");
-        await SendAsync(socket, new AgentMessage { Type = "register", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = new[] { "command", "proxy.http", "proxy.websocket", "proxy.binary-response-v1" }, Instances = Snapshot() }, ct);
+        await SendAsync(socket, new AgentMessage { Type = "register", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = AgentCapabilities, Instances = Snapshot() }, ct);
         var receive = ReceiveLoopAsync(socket, ct);
         try
         {
@@ -119,7 +136,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             {
                 var completed = await Task.WhenAny(receive, Task.Delay(TimeSpan.FromSeconds(15), ct));
                 if (completed == receive) { await receive; break; }
-                await SendAsync(socket, new AgentMessage { Type = "heartbeat", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = new[] { "command", "proxy.http", "proxy.websocket", "proxy.binary-response-v1" }, Instances = Snapshot() }, ct);
+                await SendAsync(socket, new AgentMessage { Type = "heartbeat", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = AgentCapabilities, Instances = Snapshot() }, ct);
             }
         }
         finally
@@ -138,7 +155,13 @@ public sealed class ManagerAgent : IAsyncDisposable
             if (result.MessageType == WebSocketMessageType.Close) return;
             ms.Write(buffer, 0, result.Count);
             if (!result.EndOfMessage) continue;
-            var json = Encoding.UTF8.GetString(ms.ToArray()); ms.SetLength(0);
+            var payload = ms.ToArray(); ms.SetLength(0);
+            if (result.MessageType == WebSocketMessageType.Binary)
+            {
+                _ = HandleBinaryManagerMessageAsync(socket, payload, ct);
+                continue;
+            }
+            var json = Encoding.UTF8.GetString(payload);
             ManagerCommand? command;
             try { command = JsonSerializer.Deserialize<ManagerCommand>(json, _json); }
             catch (Exception parseError) { _log("[Manager] 收到无效 manager 消息: " + parseError.Message); continue; }
@@ -146,7 +169,18 @@ public sealed class ManagerAgent : IAsyncDisposable
             else if (command?.Type == "proxy_request")
             {
                 var proxy = JsonSerializer.Deserialize<ManagerProxyRequest>(json, _json);
-                if (proxy != null) _ = ExecuteProxyRequestAsync(socket, proxy, ct);
+                if (proxy != null)
+                {
+                    if (TryStartProxyHttpOperation(proxy.RequestId, ct, out var operation, out var rejection))
+                        _ = ExecuteProxyRequestAsync(socket, proxy, operation);
+                    else
+                        _ = RejectProxyRequestAsync(socket, proxy.RequestId, rejection, ct);
+                }
+            }
+            else if (command?.Type == "proxy_cancel")
+            {
+                var cancel = JsonSerializer.Deserialize<ManagerProxyCancel>(json, _json);
+                if (cancel != null) CancelProxyHttpOperation(cancel.RequestId);
             }
             else if (command?.Type == "proxy_ws_open")
             {
@@ -164,6 +198,25 @@ public sealed class ManagerAgent : IAsyncDisposable
                 if (close != null) _ = CloseProxyWebSocketAsync(close);
             }
         }
+    }
+
+    private async Task HandleBinaryManagerMessageAsync(ClientWebSocket socket, byte[] payload, CancellationToken ct)
+    {
+        var separator = Array.IndexOf(payload, (byte)'\n');
+        if (separator <= 0) { _log("[Manager] 收到无效二进制 manager 消息"); return; }
+        try
+        {
+            var header = Encoding.UTF8.GetString(payload, 0, separator);
+            var frame = JsonSerializer.Deserialize<ManagerProxyWebSocketFrame>(header, _json);
+            if (frame?.Type is "proxy_ws_frame_binary" or "proxy_ws_frame")
+            {
+                // The binary envelope carries raw bytes, but its header still
+                // determines whether the local DSH WebSocket expects text or binary.
+                // Coercing text frames to binary breaks the remote mux handshake.
+                await ForwardProxyWebSocketFrameAsync(frame, payload.AsMemory(separator + 1), ct);
+            }
+        }
+        catch (Exception ex) { _log("[Manager] 处理二进制 manager 消息失败: " + ex.Message); }
     }
 
     private async Task ExecuteCommandAsync(ClientWebSocket socket, ManagerCommand command, CancellationToken ct)
@@ -189,25 +242,32 @@ public sealed class ManagerAgent : IAsyncDisposable
     }
 
 
-    private async Task ExecuteProxyRequestAsync(ClientWebSocket socket, ManagerProxyRequest request, CancellationToken ct)
+    private async Task ExecuteProxyRequestAsync(ClientWebSocket socket, ManagerProxyRequest request, ProxyHttpOperation operation)
+    {
+        try { await ExecuteProxyRequestCoreAsync(socket, request, operation); }
+        finally { EndProxyHttpOperation(request.RequestId, operation); }
+    }
+
+    private async Task ExecuteProxyRequestCoreAsync(ClientWebSocket socket, ManagerProxyRequest request, ProxyHttpOperation operation)
     {
         var result = new AgentMessage { Type = "proxy_response", RequestId = request.RequestId };
         byte[]? binaryBody = null;
         try
         {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(operation.Token);
+            timeout.CancelAfter(ProxyHttpTimeout);
+            var token = timeout.Token;
             var connection = _connections.Connections.FirstOrDefault(c => ConnectionManager.IdOf(c) == request.InstanceId);
             if (connection == null || string.IsNullOrWhiteSpace(connection.CurrentUrl)) throw new InvalidOperationException("dsh 实例未运行");
-            using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.None };
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
             var target = request.Bootstrap && request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) && request.Path == "/"
                 ? new Uri(connection.CurrentUrl)
                 : BuildLocalHttpTarget(connection.CurrentUrl, request.Path);
             var targetOrigin = target.GetLeftPart(UriPartial.Authority);
+            var client = GetProxyHttpClient(request.InstanceId, targetOrigin);
             var acceptedEncoding = request.Headers.TryGetValue("Accept-Encoding", out var requestEncoding) ? requestEncoding : "";
             var acceptsGzip = acceptedEncoding.Contains("gzip", StringComparison.OrdinalIgnoreCase);
-            _log("[Manager] 代理请求: " + request.Method + " " + request.Path + " -> " + target.GetLeftPart(UriPartial.Path) + " (instance=" + request.InstanceId + ")");
             using var message = new HttpRequestMessage(new HttpMethod(request.Method), target);
-            var bodyBytes = string.IsNullOrEmpty(request.Body) ? Array.Empty<byte>() : Convert.FromBase64String(request.Body);
+            var bodyBytes = DecodeProxyRequestBody(request.Body);
             var hasContentHeaders = request.Headers.Keys.Any(k => k.StartsWith("Content-", StringComparison.OrdinalIgnoreCase));
             if (bodyBytes.Length > 0 || hasContentHeaders) message.Content = new ByteArrayContent(bodyBytes);
             foreach (var pair in request.Headers)
@@ -225,7 +285,7 @@ public sealed class ManagerAgent : IAsyncDisposable
                 message.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
             }
             message.Headers.TryAddWithoutValidation("Accept-Encoding", acceptsGzip ? "gzip" : "identity");
-            using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, token);
             result.Status = (int)response.StatusCode;
             result.Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var header in response.Headers.Concat(response.Content.Headers))
@@ -235,29 +295,42 @@ public sealed class ManagerAgent : IAsyncDisposable
                     || string.Equals(header.Key, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
                 if (!result.Headers.ContainsKey(header.Key)) result.Headers[header.Key] = string.Join(", ", header.Value);
             }
-            if (response.Headers.TryGetValues("Set-Cookie", out var setCookies))
-                result.SetCookies = setCookies.ToList();
-            var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
+            if (response.Headers.TryGetValues("Set-Cookie", out var setCookies)) result.SetCookies = setCookies.ToList();
+            if (request.StreamResponse)
+            {
+                await StreamProxyResponseAsync(socket, result, response, token);
+                return;
+            }
+            var responseBytes = await ReadProxyResponseBodyAsync(response.Content, token);
             if (request.BinaryResponse) binaryBody = responseBytes;
             else result.Body = Convert.ToBase64String(responseBytes);
-            _log("[Manager] 代理响应: " + request.Method + " " + request.Path + " HTTP " + (int)response.StatusCode + " bytes=" + responseBytes.Length + " cookies=" + (result.SetCookies?.Count ?? 0));
-            if ((request.Path.StartsWith("/api/session", StringComparison.OrdinalIgnoreCase)
-                || request.Path.StartsWith("/api/workspace", StringComparison.OrdinalIgnoreCase))
-                && !result.Headers.ContainsKey("Content-Encoding"))
-            {
-                var preview = Encoding.UTF8.GetString(responseBytes);
-                if (preview.Length > 1200) preview = preview[..1200] + "…";
-                _log("[Manager] session API body: " + preview.Replace("\r", " ").Replace("\n", " "));
-            }
+            _log("[Manager] 代理响应: " + request.Method + " HTTP " + (int)response.StatusCode + " bytes=" + responseBytes.Length);
+        }
+        catch (OperationCanceledException) when (operation.IsCancellationRequested)
+        {
+            _log("[Manager] 代理请求已取消");
+            return;
+        }
+        catch (ProxyPayloadTooLargeException)
+        {
+            result.Status = 413;
+            result.Error = "proxy payload too large";
+        }
+        catch (OperationCanceledException)
+        {
+            result.Status = 504;
+            result.Error = "proxy request timed out";
         }
         catch (Exception ex) { result.Status = 502; result.Error = ex.Message; }
         try
         {
+            operation.Token.ThrowIfCancellationRequested();
             if (request.BinaryResponse && binaryBody != null && string.IsNullOrEmpty(result.Error))
-                await SendProxyResponseBinaryAsync(socket, result, binaryBody, ct);
+                await SendProxyResponseBinaryAsync(socket, result, binaryBody, operation.Token);
             else
-                await SendAsync(socket, result, ct);
+                await SendAsync(socket, result, operation.Token);
         }
+        catch (OperationCanceledException) when (operation.IsCancellationRequested) { }
         catch (Exception ex) { _log("[Manager] 返回代理结果失败: " + ex.Message); }
     }
 
@@ -275,7 +348,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             local.Options.SetRequestHeader("Origin", targetOrigin);
             if (request.Headers.TryGetValue("Cookie", out var cookie) && !string.IsNullOrWhiteSpace(cookie)) local.Options.SetRequestHeader("Cookie", cookie);
             await local.ConnectAsync(new Uri(target), ct);
-            var tunnel = new ProxySocket(local);
+            var tunnel = new ProxySocket(local, request.BinaryFrames);
             if (!_proxySockets.TryAdd(request.RequestId, tunnel)) { local.Abort(); throw new InvalidOperationException("重复的 WebSocket tunnel"); }
             result.OK = true;
             await SendAsync(managerSocket, result, ct);
@@ -300,7 +373,11 @@ public sealed class ManagerAgent : IAsyncDisposable
                 messageType ??= received.MessageType;
                 messageBuffer.Write(buffer, 0, received.Count);
                 if (!received.EndOfMessage) continue;
-                await SendAsync(managerSocket, new AgentMessage { Type = "proxy_ws_frame", RequestId = requestId, FrameType = messageType == WebSocketMessageType.Binary ? "binary" : "text", Body = Convert.ToBase64String(messageBuffer.ToArray()) }, ct);
+                var data = messageBuffer.ToArray();
+                if (messageType == WebSocketMessageType.Binary && tunnel.BinaryFrames)
+                    await SendBinaryEnvelopeAsync(managerSocket, new AgentMessage { Type = "proxy_ws_frame_binary", RequestId = requestId, FrameType = "binary" }, data, ct);
+                else
+                    await SendAsync(managerSocket, new AgentMessage { Type = "proxy_ws_frame", RequestId = requestId, FrameType = messageType == WebSocketMessageType.Binary ? "binary" : "text", Body = Convert.ToBase64String(data) }, ct);
                 messageBuffer.SetLength(0);
                 messageType = null;
             }
@@ -314,10 +391,12 @@ public sealed class ManagerAgent : IAsyncDisposable
         }
     }
 
-    private async Task ForwardProxyWebSocketFrameAsync(ManagerProxyWebSocketFrame frame, CancellationToken ct)
+    private Task ForwardProxyWebSocketFrameAsync(ManagerProxyWebSocketFrame frame, CancellationToken ct) =>
+        ForwardProxyWebSocketFrameAsync(frame, Convert.FromBase64String(frame.Body ?? ""), ct);
+
+    private async Task ForwardProxyWebSocketFrameAsync(ManagerProxyWebSocketFrame frame, ReadOnlyMemory<byte> data, CancellationToken ct)
     {
         if (!_proxySockets.TryGetValue(frame.RequestId, out var tunnel)) return;
-        var data = Convert.FromBase64String(frame.Body ?? "");
         await tunnel.SendGate.WaitAsync(ct);
         try { await tunnel.Socket.SendAsync(data, frame.FrameType == "binary" ? WebSocketMessageType.Binary : WebSocketMessageType.Text, true, ct); }
         finally { tunnel.SendGate.Release(); }
@@ -328,6 +407,100 @@ public sealed class ManagerAgent : IAsyncDisposable
         if (_proxySockets.TryRemove(frame.RequestId, out var tunnel))
         {
             try { await tunnel.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, frame.Error ?? "browser closed", CancellationToken.None); } catch { tunnel.Socket.Abort(); }
+        }
+    }
+
+    private bool TryStartProxyHttpOperation(string requestId, CancellationToken stopToken, out ProxyHttpOperation operation, out string rejection)
+    {
+        operation = null!;
+        rejection = "";
+        if (string.IsNullOrWhiteSpace(requestId) || requestId.Length > 256) { rejection = "invalid proxy request id"; return false; }
+        if (_proxyHttpOperations.ContainsKey(requestId)) { rejection = "duplicate proxy request"; return false; }
+        if (!_proxyHttpGate.Wait(0)) { rejection = "proxy busy"; return false; }
+        var candidate = new ProxyHttpOperation(CancellationTokenSource.CreateLinkedTokenSource(stopToken));
+        if (_proxyHttpOperations.TryAdd(requestId, candidate)) { operation = candidate; return true; }
+        candidate.Dispose();
+        _proxyHttpGate.Release();
+        rejection = "duplicate proxy request";
+        return false;
+    }
+
+    private void CancelProxyHttpOperation(string requestId)
+    {
+        if (_proxyHttpOperations.TryGetValue(requestId, out var operation)) operation.Cancel();
+    }
+
+    private void EndProxyHttpOperation(string requestId, ProxyHttpOperation operation)
+    {
+        ((ICollection<KeyValuePair<string, ProxyHttpOperation>>)_proxyHttpOperations).Remove(new KeyValuePair<string, ProxyHttpOperation>(requestId, operation));
+        operation.Dispose();
+        _proxyHttpGate.Release();
+    }
+
+    private async Task RejectProxyRequestAsync(ClientWebSocket socket, string requestId, string error, CancellationToken ct)
+    {
+        try { await SendAsync(socket, new AgentMessage { Type = "proxy_response", RequestId = requestId, Status = error == "proxy busy" ? 429 : 409, Error = error }, ct); }
+        catch (Exception ex) { _log("[Manager] 返回代理拒绝结果失败: " + ex.Message); }
+    }
+
+    private static byte[] DecodeProxyRequestBody(string body)
+    {
+        if (string.IsNullOrEmpty(body)) return Array.Empty<byte>();
+        if (body.Length > ((MaxProxyRequestBodyBytes + 2) / 3) * 4) throw new ProxyPayloadTooLargeException();
+        var bytes = Convert.FromBase64String(body);
+        if (bytes.Length > MaxProxyRequestBodyBytes) throw new ProxyPayloadTooLargeException();
+        return bytes;
+    }
+
+    private static async Task<byte[]> ReadProxyResponseBodyAsync(HttpContent content, CancellationToken ct)
+    {
+        if (content.Headers.ContentLength is long length && length > MaxProxyResponseBytes) throw new ProxyPayloadTooLargeException();
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        await using var output = new MemoryStream();
+        var buffer = new byte[ProxyBufferSize];
+        int read;
+        while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+        {
+            if (output.Length + read > MaxProxyResponseBytes) throw new ProxyPayloadTooLargeException();
+            await output.WriteAsync(buffer.AsMemory(0, read), ct);
+        }
+        return output.ToArray();
+    }
+
+    private HttpClient GetProxyHttpClient(string instanceId, string targetOrigin)
+    {
+        var key = instanceId + "|" + targetOrigin;
+        return _proxyHttpClients.GetOrAdd(key, _ => new HttpClient(new HttpClientHandler
+        {
+            UseProxy = false,
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.None
+        }) { Timeout = Timeout.InfiniteTimeSpan });
+    }
+
+    private async Task StreamProxyResponseAsync(ClientWebSocket socket, AgentMessage response, HttpResponseMessage localResponse, CancellationToken ct)
+    {
+        if (localResponse.Content.Headers.ContentLength is long length && length > MaxProxyResponseBytes) throw new ProxyPayloadTooLargeException();
+        response.Type = "proxy_response_start";
+        await SendAsync(socket, response, ct);
+        long total = 0;
+        try
+        {
+            await using var stream = await localResponse.Content.ReadAsStreamAsync(ct);
+            var buffer = new byte[ProxyBufferSize];
+            int read;
+            while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+            {
+                if (total + read > MaxProxyResponseBytes) throw new ProxyPayloadTooLargeException();
+                await SendBinaryEnvelopeAsync(socket, new AgentMessage { Type = "proxy_response_chunk_binary", RequestId = response.RequestId }, buffer.AsMemory(0, read), ct);
+                total += read;
+            }
+            await SendAsync(socket, new AgentMessage { Type = "proxy_response_end", RequestId = response.RequestId }, ct);
+            _log("[Manager] 流式代理响应: HTTP " + response.Status + " bytes=" + total + " request=" + response.RequestId);
+        }
+        catch (Exception ex)
+        {
+            try { await SendAsync(socket, new AgentMessage { Type = "proxy_response_end", RequestId = response.RequestId, Error = ex.Message }, ct); } catch { }
         }
     }
 
@@ -344,11 +517,24 @@ public sealed class ManagerAgent : IAsyncDisposable
         return new UriBuilder(uri) { Scheme = scheme }.Uri.ToString();
     }
 
+    private sealed class ProxyHttpOperation : IDisposable
+    {
+        public CancellationTokenSource Cancellation { get; }
+        public CancellationToken Token => Cancellation.Token;
+        public bool IsCancellationRequested => Cancellation.IsCancellationRequested;
+        public ProxyHttpOperation(CancellationTokenSource cancellation) => Cancellation = cancellation;
+        public void Cancel() { try { Cancellation.Cancel(); } catch (ObjectDisposedException) { } }
+        public void Dispose() => Cancellation.Dispose();
+    }
+
+    private sealed class ProxyPayloadTooLargeException : Exception { }
+
     private sealed class ProxySocket
     {
         public ClientWebSocket Socket { get; }
+        public bool BinaryFrames { get; }
         public SemaphoreSlim SendGate { get; } = new(1, 1);
-        public ProxySocket(ClientWebSocket socket) { Socket = socket; }
+        public ProxySocket(ClientWebSocket socket, bool binaryFrames) { Socket = socket; BinaryFrames = binaryFrames; }
     }
 
     private List<ManagerInstance> Snapshot() => _connections.Connections.Select(c => new ManagerInstance
@@ -380,15 +566,20 @@ public sealed class ManagerAgent : IAsyncDisposable
         }
         return string.Join(" -> ", messages);
     }
-    private async Task SendProxyResponseBinaryAsync(ClientWebSocket socket, AgentMessage message, byte[] body, CancellationToken ct)
+    private Task SendProxyResponseBinaryAsync(ClientWebSocket socket, AgentMessage message, byte[] body, CancellationToken ct)
     {
         message.Type = "proxy_response_binary";
         message.Body = null;
+        return SendBinaryEnvelopeAsync(socket, message, body, ct);
+    }
+
+    private async Task SendBinaryEnvelopeAsync(ClientWebSocket socket, AgentMessage message, ReadOnlyMemory<byte> body, CancellationToken ct)
+    {
         var header = JsonSerializer.SerializeToUtf8Bytes(message, _json);
         var data = new byte[header.Length + 1 + body.Length];
         Buffer.BlockCopy(header, 0, data, 0, header.Length);
         data[header.Length] = (byte)'\n';
-        Buffer.BlockCopy(body, 0, data, header.Length + 1, body.Length);
+        body.CopyTo(data.AsMemory(header.Length + 1));
         await _sendGate.WaitAsync(ct);
         try { await socket.SendAsync(data, WebSocketMessageType.Binary, true, ct); }
         finally { _sendGate.Release(); }
@@ -405,8 +596,9 @@ public sealed class ManagerAgent : IAsyncDisposable
     private sealed class EnrollResponse { public string AgentId { get; set; } = ""; public string AgentToken { get; set; } = ""; }
     private sealed class AgentMessage { public string Type { get; set; } = ""; public string AgentType { get; set; } = ""; public string AgentVersion { get; set; } = ""; public string PluginVersion { get; set; } = ""; public string[]? Capabilities { get; set; } public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public bool? OK { get; set; } public string? Error { get; set; } public int Status { get; set; } public Dictionary<string,string>? Headers { get; set; } public List<string>? SetCookies { get; set; } public string? Body { get; set; } public string FrameType { get; set; } = ""; public List<ManagerInstance>? Instances { get; set; } }
     private sealed class ManagerCommand { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Action { get; set; } = ""; }
-    private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; public bool Bootstrap { get; set; } public bool BinaryResponse { get; set; } }
-    private sealed class ManagerProxyWebSocketOpen { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); }
+    private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; public bool Bootstrap { get; set; } public bool BinaryResponse { get; set; } public bool StreamResponse { get; set; } }
+    private sealed class ManagerProxyCancel { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string? Reason { get; set; } }
+    private sealed class ManagerProxyWebSocketOpen { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public bool BinaryFrames { get; set; } }
     private sealed class ManagerProxyWebSocketFrame { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string FrameType { get; set; } = "text"; public string? Body { get; set; } public string? Error { get; set; } }
     private sealed class ManagerInstance { public string InstanceId { get; set; } = ""; public string DisplayName { get; set; } = ""; public string Type { get; set; } = ""; public string State { get; set; } = ""; public bool URLAvailable { get; set; } public string? StartupUrl { get; set; } }
 }

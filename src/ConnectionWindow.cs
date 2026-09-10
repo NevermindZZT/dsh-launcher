@@ -212,6 +212,7 @@ public sealed class ConnectionWindow : Form
         cwv.Settings.IsStatusBarEnabled = false;
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionConfigScript(_main.HandleAgentQuestions));
         await WebModalRouter.Install(_web);
         WebView2PermissionPolicy.Attach(cwv);
         cwv.WebMessageReceived += (_, e) =>
@@ -457,6 +458,11 @@ public sealed class ConnectionWindow : Form
             else if (s == HostState.Running) ShowLoading("正在加载界面…");
         });
         _conn.Ready += url => SafeUi(() => { Navigate(url); HideLoading(); });
+    }
+
+    internal void ApplyAgentQuestionHandling(bool enabled)
+    {
+        if (_web.CoreWebView2 != null) _ = _web.CoreWebView2.ExecuteScriptAsync(WebShell.BrowserInteractionConfigScript(enabled));
     }
 
     private async Task ReplyBrowserInteractionAsync(string eventId, string clientId, DshInteractionDecision decision)

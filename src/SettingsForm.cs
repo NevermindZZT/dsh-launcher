@@ -12,6 +12,7 @@ public sealed class SettingsForm : ThemedForm
     private readonly ThemedRadioButton _rbTray = new() { Text = "隐藏到托盘，dsh 服务保持运行（推荐）" };
     private readonly ThemedRadioButton _rbExit = new() { Text = "停止服务并退出" };
     private readonly ThemedCheckBox _chkAutoStart = new() { Text = "开机自动启动" };
+    private readonly ThemedCheckBox _chkHandleAgentQuestions = new() { Text = "由 Launcher 处理 Agent 问题并显示通知" };
     private readonly Label _dshHome = new() { AutoSize = true };
     // 连接模式
     private readonly ThemedRadioButton _rbLocalMode = new() { Text = "本地" };
@@ -35,7 +36,7 @@ public sealed class SettingsForm : ThemedForm
         _settings = settings;
         Text = "设置";
         Width = 840;
-        Height = 1020;
+        Height = 1080;
         MinimumSize = new Size(740, 700);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -58,6 +59,7 @@ public sealed class SettingsForm : ThemedForm
         _rbTray.Checked = !settings.CloseExits;
         _rbExit.Checked = settings.CloseExits;
         _chkAutoStart.Checked = settings.AutoStart;
+        _chkHandleAgentQuestions.Checked = settings.HandleAgentQuestions;
         var dshHome = Environment.GetEnvironmentVariable("DSH_HOME")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
         _dshHome.Text = dshHome;
@@ -101,6 +103,12 @@ public sealed class SettingsForm : ThemedForm
         row++;
         panel.Controls.Add(MkLabel("开机自启"), 0, row);
         panel.Controls.Add(_chkAutoStart, 1, row);
+        row++;
+        panel.Controls.Add(MkLabel("Agent 问题处理"), 0, row);
+        var interactionWrap = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        interactionWrap.Controls.Add(_chkHandleAgentQuestions);
+        interactionWrap.Controls.Add(MkLabel("关闭后由 dsh 原生 Web UI 询问，不显示 Launcher 通知。", muted: true));
+        panel.Controls.Add(interactionWrap, 1, row);
         row++;
         panel.Controls.Add(MkLabel("DSH_HOME"), 0, row);
         panel.Controls.Add(_dshHome, 1, row);
@@ -186,6 +194,7 @@ public sealed class SettingsForm : ThemedForm
         _settings.WorkingDirectory = string.IsNullOrWhiteSpace(_cwd.Inner.Text) ? null : _cwd.Inner.Text.Trim();
         _settings.CloseExits = _rbExit.Checked;
         _settings.AutoStart = _chkAutoStart.Checked;
+        _settings.HandleAgentQuestions = _chkHandleAgentQuestions.Checked;
         _settings.Manager.Enabled = _chkManager.Checked;
         _settings.Manager.ServerUrl = _managerUrl.Inner.Text.Trim();
         _settings.Manager.AgentName = _managerName.Inner.Text.Trim();

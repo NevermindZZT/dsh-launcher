@@ -26,7 +26,7 @@ public sealed class MainForm : Form
     private readonly DshInteractionCoordinator _interactions = new();
     private readonly BrowserDshInteractionReplyTracker _browserInteractionReplies = new();
     private ToolStripMenuItem? _pendingInteractionsMenu;
-    private DshInteractionOverlayForm? _interactionOverlay;
+    private DshInteractionWebOverlayForm? _interactionOverlay;
     private ManagerInteractionEventClient? _managerInteractions;
     private IDshConnection _current = null!;
 
@@ -402,7 +402,8 @@ public sealed class MainForm : Form
         };
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
-         await WebModalRouter.Install(_web);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionConfigScript(_settings.HandleAgentQuestions));
+        await WebModalRouter.Install(_web);
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
@@ -416,7 +417,7 @@ public sealed class MainForm : Form
             }
             if (WebModalRouter.TryHandle(raw, (action, payload) =>
             {
-                if (action == "settings.save") { WebModalRouter.Apply(_settings, payload); _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections); _ = _managerAgent.RestartAsync(); return; }
+                if (action == "settings.save") { WebModalRouter.Apply(_settings, payload); ApplyAgentQuestionHandling(); _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections); _ = _managerAgent.RestartAsync(); return; }
                 if (action == "logs.open") { ShowWebModal("logs", new { page="logs", history=ReadHistory() }); return; }
                 if (action == "logs.clear") { try { File.WriteAllText(_host.LogFile, string.Empty); } catch { } ShowWebModal("logs", new { page="logs", history=string.Empty }); return; }
                 if (action == "plugins.open" || action == "plugins.list") { ShowPluginsModal(); return; }
@@ -1177,6 +1178,7 @@ public sealed class MainForm : Form
         if (dlg.ShowDialog(this) == DialogResult.OK)
         {
             dlg.Apply();
+            ApplyAgentQuestionHandling();
             // 同步连接列表（复用运行中实例，新增/删除的服务器生效）
             _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections);
             _ = _managerAgent.RestartAsync();
@@ -1326,9 +1328,19 @@ public sealed class MainForm : Form
         var sourceKey = ConnectionManager.IdOf(connection);
         if (browser.Type == "cancel") { _interactions.CancelExternal(sourceKey, browser.EventId); return true; }
         if (browser.Kind == null) return true;
+        if (browser.Kind == DshInteractionKind.Question && !_settings.HandleAgentQuestions) return false;
         var interaction = new DshPendingInteraction(sourceKey, connection.DisplayName, browser.EventId, browser.ClientId, browser.AgentId, browser.Kind.Value, browser.ToolName, browser.Reason, browser.Questions, new BrowserDshInteractionResponder(reply));
         _interactions.PublishExternal(interaction);
         return true;
+    }
+
+    internal bool HandleAgentQuestions => _settings.HandleAgentQuestions;
+
+    private void ApplyAgentQuestionHandling()
+    {
+        var script = WebShell.BrowserInteractionConfigScript(_settings.HandleAgentQuestions);
+        if (_web.CoreWebView2 != null) _ = _web.CoreWebView2.ExecuteScriptAsync(script);
+        foreach (var window in _remoteWindows.Where(window => !window.IsDisposed)) window.ApplyAgentQuestionHandling(_settings.HandleAgentQuestions);
     }
 
     private async Task ReplyMainBrowserInteractionAsync(string eventId, string clientId, DshInteractionDecision decision)
@@ -1350,7 +1362,7 @@ public sealed class MainForm : Form
         if (_quitting) return;
         if (_interactionOverlay is { IsDisposed: false }) return;
 
-        var overlay = new DshInteractionOverlayForm(interaction);
+        var overlay = new DshInteractionWebOverlayForm(interaction);
         _interactionOverlay = overlay;
         overlay.DecisionSelected += decision => SubmitInteractionDecisionAsync(interaction, decision);
         overlay.FormClosed += (_, _) =>

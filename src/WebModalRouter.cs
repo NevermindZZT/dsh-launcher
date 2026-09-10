@@ -17,6 +17,7 @@ internal static class WebModalRouter
             closeExits = s.CloseExits,
             autoStart = s.AutoStart,
             openLinksInWebView = s.OpenLinksInWebView,
+            handleAgentQuestions = s.HandleAgentQuestions,
             ssh = s.SshConnections.Select(x => new { x.Name, x.Host, x.Port, x.User, x.AuthMethod, x.KeyPath, x.LocalPort, x.RemotePort, x.AutoConnect }),
             history = "",
             plugins = Array.Empty<object>(),
@@ -79,6 +80,8 @@ internal static class WebModalRouter
         if (autoStart.ValueKind is JsonValueKind.True or JsonValueKind.False) s.AutoStart = autoStart.GetBoolean();
         var links = Prop(data, "openLinksInWebView");
         if (links.ValueKind is JsonValueKind.True or JsonValueKind.False) s.OpenLinksInWebView = links.GetBoolean();
+        var questions = Prop(data, "handleAgentQuestions");
+        if (questions.ValueKind is JsonValueKind.True or JsonValueKind.False) s.HandleAgentQuestions = questions.GetBoolean();
 
         var oldManagerUrl = s.Manager.ServerUrl;
         var manager = Prop(data, "manager");
@@ -154,6 +157,9 @@ internal static class WebModalRouter
         '<fieldset><legend>'+t('启动与关闭','Startup & Shutdown')+'</legend>'+
         '<div class="form-row"><label>'+t('关闭时退出','Close exits')+'</label><input id="ce" type="checkbox" '+(m.closeExits?'checked':'')+'></div>'+
         '<div class="form-row"><label>'+t('自动启动','Auto-start')+'</label><input id="as" type="checkbox" '+(m.autoStart?'checked':'')+'></div></fieldset>'+
+        '<fieldset><legend>'+t('Agent 交互','Agent interactions')+'</legend>'+
+        '<div class="form-row"><label>'+t('由 Launcher 处理问题并通知','Let Launcher handle questions and notify')+'</label><input id="aq" type="checkbox" '+(m.handleAgentQuestions!==false?'checked':'')+'></div>'+
+        '<div class="manager-muted">'+t('关闭后不拦截 Agent 问题，改由 dsh 原生 Web UI 询问。','When disabled, dsh handles Agent questions in its native Web UI.')+'</div></fieldset>'+
         '<fieldset><legend>'+t('链接打开方式','Link opening')+'</legend>'+
         '<div class="form-row"><label>'+t('链接使用 WebView2','Open links in WebView2')+'</label><input id="lw" type="checkbox" '+(m.openLinksInWebView?'checked':'')+'></div></fieldset>'+
         '<div class="actions"><button class="primary" id="save">'+t('保存设置','Save')+'</button></div>';
@@ -251,7 +257,7 @@ internal static class WebModalRouter
       else if(el.id==='manager-logout')send('manager.logout');
       else if(el.closest('[data-manager-action]')){var b=el.closest('[data-manager-action]');send('manager.command',{agentId:b.dataset.agent,instanceId:b.dataset.instance,action:b.dataset.managerAction});}
       else if(el.closest('[data-manager-open]')){var b=el.closest('[data-manager-open]');send('manager.open',{agentId:b.dataset.agent,instanceId:b.dataset.instance});}
-      else if(el.id==='save')send('settings.save',{attachPort:+val('port'),workingDirectory:val('wd'),closeExits:o.querySelector('#ce').checked,autoStart:o.querySelector('#as').checked,openLinksInWebView:o.querySelector('#lw').checked,manager:{enabled:o.querySelector('#men').checked,serverUrl:val('url'),agentName:val('an'),pairingCode:val('pc')}});
+      else if(el.id==='save')send('settings.save',{attachPort:+val('port'),workingDirectory:val('wd'),closeExits:o.querySelector('#ce').checked,autoStart:o.querySelector('#as').checked,openLinksInWebView:o.querySelector('#lw').checked,handleAgentQuestions:o.querySelector('#aq').checked,manager:{enabled:o.querySelector('#men').checked,serverUrl:val('url'),agentName:val('an'),pairingCode:val('pc')}});
       else if(row){window.__dshSelectedPlugin=row.dataset.pkg;o.querySelectorAll('.plugin-row').forEach(function(x){x.classList.toggle('selected',x===row)});}
       else if(el.id==='install')send('plugins.install',{package:val('pkg')});
       else if(el.id==='remove')send('plugins.remove',{package:window.__dshSelectedPlugin||val('pkg')});

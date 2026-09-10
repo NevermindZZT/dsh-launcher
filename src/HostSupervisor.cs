@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -462,6 +463,18 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
             using var resp = await client.GetAsync(url + "/", ct);
+            if (resp.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                // DSH 0.1.2+ deliberately protects its root with a one-time startup
+                // token. A 401 still proves a live DSH Host owns this DSH_HOME.
+                // Spawning another Host would make both processes resume the same
+                // durable sessions and cause SessionAlreadyOwnedError.
+                var message = $"检测到已有 dsh Host 正在 {url} 运行，但它需要 startup token 才能附加。为避免两个 Host 争抢同一会话，请先关闭已有 dsh Host，或继续在原浏览器窗口使用它。";
+                Log($"attach 探测 {url}: HTTP 401（已有认证 dsh）-> 禁止启动第二个实例");
+                SetFailureDetails(message);
+                SetState(HostState.Failed);
+                throw new InvalidOperationException(message);
+            }
             if (!resp.IsSuccessStatusCode)
             {
                 Log($"attach 探测 {url}: HTTP {(int)resp.StatusCode} -> 启动新实例");
@@ -477,6 +490,12 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
                 ? $"attach 探测 {url}: 发现 dsh 标记（{html.Length} 字节）-> 连接已有实例"
                 : $"attach 探测 {url}: 无 dsh 标记 -> 启动新实例");
             return hit ? url : null;
+        }
+        catch (InvalidOperationException)
+        {
+            // An authenticated dsh Host was found. Do not swallow this guard and
+            // accidentally spawn a second process against the same DSH_HOME.
+            throw;
         }
         catch (Exception ex)
         {

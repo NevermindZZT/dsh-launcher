@@ -14,6 +14,7 @@ public sealed class ConnectionWindow : Form
     private readonly IDshConnection _conn;
     private readonly MainForm _main;
     private readonly ShellWebView _web = new();
+    private readonly BrowserDshInteractionReplyTracker _browserInteractionReplies = new();
     private readonly Panel _loadingOverlay = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 20, 24), Visible = true };
     private readonly LoadingSpinner _spinner = new() { Size = new Size(56, 56) };
     private readonly Label _loadingText = new()
@@ -210,11 +211,14 @@ public sealed class ConnectionWindow : Form
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
         await WebModalRouter.Install(_web);
         WebView2PermissionPolicy.Attach(cwv);
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
+            if (_browserInteractionReplies.TryComplete(raw)) return;
+            if (_main.HandleBrowserInteraction(_conn, raw, ReplyBrowserInteractionAsync)) return;
             if (BrowserNotificationBridge.TryParse(raw, out var notice))
             {
                 _main.ShowSystemNotification(
@@ -453,6 +457,20 @@ public sealed class ConnectionWindow : Form
             else if (s == HostState.Running) ShowLoading("正在加载界面…");
         });
         _conn.Ready += url => SafeUi(() => { Navigate(url); HideLoading(); });
+    }
+
+    private async Task ReplyBrowserInteractionAsync(string eventId, string clientId, DshInteractionDecision decision)
+    {
+        var web = _web.CoreWebView2 ?? throw new InvalidOperationException("远程 dsh WebView 不可用");
+        var pending = _browserInteractionReplies.Begin();
+        try
+        {
+            var outcome = DshInteractionOutcome.Build(decision);
+            var call = $"if(!window.__dshLauncherResolveRemoteEvent)throw new Error('dsh 交互桥接未就绪');window.__dshLauncherResolveRemoteEvent({JsonSerializer.Serialize(eventId)},{JsonSerializer.Serialize(clientId)},{JsonSerializer.Serialize(outcome)},{JsonSerializer.Serialize(pending.RequestId)});";
+            await web.ExecuteScriptAsync(call);
+            await pending.Completion.WaitAsync(TimeSpan.FromSeconds(20));
+        }
+        finally { _browserInteractionReplies.Cancel(pending.RequestId); }
     }
 
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)

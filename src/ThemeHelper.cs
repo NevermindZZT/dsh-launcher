@@ -57,6 +57,13 @@ public static class ThemeHelper
         ApplyMica(hwnd);
     }
 
+    /// <summary>Theme a native scrollable control so its scrollbar follows the app theme.</summary>
+    public static void ApplyScrollableControlTheme(Control control, bool dark)
+    {
+        if (!control.IsHandleCreated) return;
+        try { SetWindowTheme(control.Handle, dark ? "DarkMode_Explorer" : "Explorer", null); } catch { }
+    }
+
     /// <summary>子窗口调色板（跟随系统主题）。</summary>
     public readonly record struct Palette(
         Color WindowBack,   // 窗口背景（Mica 近似色）
@@ -143,4 +150,7 @@ public static class ThemeHelper
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int attributeValue, int attributeSize);
+
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetWindowTheme(IntPtr hwnd, string? appName, string? idList);
 }

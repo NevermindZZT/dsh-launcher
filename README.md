@@ -33,6 +33,7 @@
 - **配置与插件同步**：本地 dsh 配置（`settings.yaml` 等）与已装插件一键同步到服务器，不用逐个重装
 - **dsh-manager Agent**：可注册到自托管 Go manager，统一上报本地与 SSH 实例状态，并接受远程启动 / 停止 / 重启 / 同步 / 更新命令
 - **原生 dsh-manager 前端**：在 Launcher 内登录 manager，查看 Agent / dsh 实例、执行生命周期命令，并用独立 WebView2 窗口打开 manager 代理的远程 dsh；不依赖 Dashboard，不共享本地或 SSH 会话 Cookie
+- **审批与问答交互（预览）**：浏览器内 `ask_user_question` 使用隔离 Web Modal 直接回答；Manager 汇聚审批仍可使用 TopMost 原生浮窗。当前 dsh 的直连观察通道默认关闭，以避免与完整 Web UI 的会话写入器冲突
 - **dsh 直连插件**：不使用 launcher 时，可在 dsh 内安装 [dsh-manager-plugin](https://github.com/NevermindZZT/dsh-manager-plugin)，直接建立 manager 反向连接
 - **Agent 通道**：manager 使用单一 HTTP/WS 端口；公网 HTTPS/WSS 由外部反向代理终止，Agent Token 使用 Windows DPAPI 保护
 - **快捷键**：`Ctrl+Shift+R/L/P/S/M/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / Manager / 退出 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
@@ -109,6 +110,16 @@ Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文�
 - 每个 manager 实例使用独立 WebView2 user-data profile，避免与本地 dsh、SSH dsh 或其它 manager 实例串 Cookie。
 
 原生面板不嵌入 manager Dashboard，也不抓取 Dashboard DOM。公网部署仍必须使用 HTTPS/WSS 反向代理；manager 的 `http://` 只适合可信内网。
+
+#### 审批与问答交互
+
+浏览器内的 `ask_user_question` 使用注入到当前 dsh WebView 的隔离 Web Modal：它直接截获问题事件、展示单选/多选、选项说明和自定义回答，并以该事件的 `clientId` / `eventId` 回传结果。这样不会产生第二个原生问答窗，也不会留下 dsh 自带的问题 UI。
+
+- Web Modal 使用 Shadow DOM 隔离样式，跟随当前 dsh 页面显示，提交失败会保留已填写内容并展示错误。
+- 权限请求和 Manager 汇聚事件仍使用 TopMost 原生浮窗；关闭窗口、连接中断和事件撤销均不会自动允许。
+- 已登录的原生 Manager 前端可订阅 manager 的管理员事件流并接管在线 Agent/Instance 的请求。
+- Manager 中继需双方声明 `remote.events-v1`。旧版 Manager 或 Agent 未协商该能力时，Launcher 安全回退为本机浮窗，不发送未知协议。
+- Manager 仅使用不透明的 manager request ID 路由事件；dsh 内部 `eventId` / `clientId` 不会发送给管理员前端。
 
 ### 5. 快捷键
 

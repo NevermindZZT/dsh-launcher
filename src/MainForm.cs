@@ -23,6 +23,11 @@ public sealed class MainForm : Form
     private readonly ConnectionManager _connections = new();
     private readonly ManagerAgent _managerAgent;
     private readonly ManagerFrontendClient _managerFrontend;
+    private readonly DshInteractionCoordinator _interactions = new();
+    private readonly BrowserDshInteractionReplyTracker _browserInteractionReplies = new();
+    private ToolStripMenuItem? _pendingInteractionsMenu;
+    private DshInteractionOverlayForm? _interactionOverlay;
+    private ManagerInteractionEventClient? _managerInteractions;
     private IDshConnection _current = null!;
 
     private readonly List<ConnectionWindow> _remoteWindows = new();
@@ -64,6 +69,17 @@ public sealed class MainForm : Form
             Diag.Log(line);
             _host.AppendLog(line);
         });
+        _interactions.InteractionReady += interaction => SafeUi(() => ShowInteractionOverlay(interaction));
+        _interactions.InteractionCancelled += interaction => SafeUi(() =>
+        {
+            if (_interactionOverlay is { IsDisposed: false } overlay && overlay.Matches(interaction))
+            {
+                _interactionOverlay = null;
+                overlay.DismissCancelled();
+            }
+        });
+        _interactions.PendingCountChanged += count => SafeUi(() => UpdatePendingInteractionMenu(count));
+        _interactions.RefreshConnections(_connections.Connections);
         _current = _connections.Local;
         Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
         Text = "DeepSeek Harness";
@@ -127,6 +143,9 @@ public sealed class MainForm : Form
         trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true }));
         trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowMainModal("settings"));
         trayMenu.Items.Add("dsh-manager  (Ctrl+Shift+M)", null, (_, _) => _ = ShowManagerAsync());
+        _pendingInteractionsMenu = new ToolStripMenuItem("待处理确认 (0)", null, (_, _) => ShowPendingInteraction());
+        _pendingInteractionsMenu.Enabled = false;
+        trayMenu.Items.Add(_pendingInteractionsMenu);
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("更新 dsh…", null, (_, _) => _ = UpdateDshAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
@@ -182,7 +201,9 @@ public sealed class MainForm : Form
         FormClosed += (_, _) =>
         {
             _notifications.Dispose();
+            try { _managerInteractions?.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
             _managerFrontend.Dispose();
+            try { _interactions.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
             if (_host is IDisposable d) { try { d.Dispose(); } catch { } }
             try { _showEvent?.Dispose(); } catch { }
         };
@@ -240,7 +261,7 @@ public sealed class MainForm : Form
     {
         // 打开前同步最新连接配置（设置中添加的服务器立即生效）。
         // 即使当前没有 SSH 连接也必须打开空列表弹窗，否则用户无法进入「新增 SSH」。
-        _connections.SyncFrom(_settings);
+        _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections);
         ShowMainModal("ssh", new { page = "ssh", ssh = _settings.SshConnections });
     }
 
@@ -361,12 +382,33 @@ public sealed class MainForm : Form
         cwv.Settings.AreDefaultContextMenusEnabled = true;
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
+        // Keep a narrow diagnostic trace for DSH RPCs. It contains only method,
+        // endpoint and status (never bodies, cookies or startup tokens), and lets
+        // us prove whether WebView2 issues duplicate session-resume requests.
+        cwv.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+        cwv.WebResourceRequested += (_, request) =>
+        {
+            if (Uri.TryCreate(request.Request.Uri, UriKind.Absolute, out var uri) && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+                Diag.Log($"[DSH API] -> {request.Request.Method} {uri.AbsolutePath}");
+        };
+        cwv.WebResourceResponseReceived += (_, response) =>
+        {
+            try
+            {
+                if (Uri.TryCreate(response.Request.Uri, UriKind.Absolute, out var uri) && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+                    Diag.Log($"[DSH API] <- {(int)response.Response.StatusCode} {response.Request.Method} {uri.AbsolutePath}");
+            }
+            catch { }
+        };
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
          await WebModalRouter.Install(_web);
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
             Diag.Log($"WebMessageReceived raw={raw}");
+            if (_browserInteractionReplies.TryComplete(raw)) return;
+            if (HandleBrowserInteraction(_connections.Local, raw, ReplyMainBrowserInteractionAsync)) return;
             if (BrowserNotificationBridge.TryParse(raw, out var notice))
             {
                 _notifications.Show(notice.Title, notice.Body, ShowMainWindow, notice.RequireInteraction);
@@ -374,7 +416,7 @@ public sealed class MainForm : Form
             }
             if (WebModalRouter.TryHandle(raw, (action, payload) =>
             {
-                if (action == "settings.save") { WebModalRouter.Apply(_settings, payload); _connections.SyncFrom(_settings); _ = _managerAgent.RestartAsync(); return; }
+                if (action == "settings.save") { WebModalRouter.Apply(_settings, payload); _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections); _ = _managerAgent.RestartAsync(); return; }
                 if (action == "logs.open") { ShowWebModal("logs", new { page="logs", history=ReadHistory() }); return; }
                 if (action == "logs.clear") { try { File.WriteAllText(_host.LogFile, string.Empty); } catch { } ShowWebModal("logs", new { page="logs", history=string.Empty }); return; }
                 if (action == "plugins.open" || action == "plugins.list") { ShowPluginsModal(); return; }
@@ -911,14 +953,14 @@ public sealed class MainForm : Form
         if (old != null) _settings.SshConnections.Remove(old);
         _settings.SshConnections.Add(config);
         _settings.Save();
-        _connections.SyncFrom(_settings);
+        _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections);
     }
 
     internal void DeleteSshConnection(string name)
     {
         _settings.SshConnections.RemoveAll(x => x.Name == name);
         _settings.Save();
-        _connections.SyncFrom(_settings);
+        _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections);
     }
 
     internal void OpenSshConnection(string name)
@@ -981,6 +1023,7 @@ public sealed class MainForm : Form
                 Error = error ?? snapshot.Error,
                 Notice = notice,
             };
+        if (snapshot.Authenticated) EnsureManagerInteractionStream();
         if (requestId == Volatile.Read(ref _managerRequestId) && !_quitting && !IsDisposed)
             ShowMainModal("manager", BuildManagerModalData(snapshot));
     }
@@ -1013,6 +1056,7 @@ public sealed class MainForm : Form
         try
         {
             await _managerFrontend.LoginAsync(serverUrl, username, password);
+            EnsureManagerInteractionStream();
             await ShowManagerAsync(notice: "manager 登录成功");
         }
         catch (Exception ex)
@@ -1021,10 +1065,20 @@ public sealed class MainForm : Form
         }
     }
 
+    private void EnsureManagerInteractionStream()
+    {
+        if (_managerInteractions != null) return;
+        var client = _managerFrontend.CreateInteractionEventClient(_interactions.PublishExternal, _interactions.CancelExternal);
+        if (client == null) return;
+        _managerInteractions = client;
+        client.Start();
+    }
+
     private async Task LogoutManagerAsync()
     {
         try
         {
+            if (_managerInteractions != null) { await _managerInteractions.DisposeAsync(); _managerInteractions = null; }
             await _managerFrontend.LogoutAsync();
             await ShowManagerAsync(notice: "已退出 manager");
         }
@@ -1124,7 +1178,7 @@ public sealed class MainForm : Form
         {
             dlg.Apply();
             // 同步连接列表（复用运行中实例，新增/删除的服务器生效）
-            _connections.SyncFrom(_settings);
+            _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections);
             _ = _managerAgent.RestartAsync();
             // 本地连接特有设置
             if (_host is HostSupervisor hs)
@@ -1266,6 +1320,84 @@ public sealed class MainForm : Form
         return SystemIcons.Application;
     }
 
+    internal bool HandleBrowserInteraction(IDshConnection connection, string raw, Func<string, string, DshInteractionDecision, Task> reply)
+    {
+        if (!BrowserDshInteractionBridge.TryParse(raw, out var browser)) return false;
+        var sourceKey = ConnectionManager.IdOf(connection);
+        if (browser.Type == "cancel") { _interactions.CancelExternal(sourceKey, browser.EventId); return true; }
+        if (browser.Kind == null) return true;
+        var interaction = new DshPendingInteraction(sourceKey, connection.DisplayName, browser.EventId, browser.ClientId, browser.AgentId, browser.Kind.Value, browser.ToolName, browser.Reason, browser.Questions, new BrowserDshInteractionResponder(reply));
+        _interactions.PublishExternal(interaction);
+        return true;
+    }
+
+    private async Task ReplyMainBrowserInteractionAsync(string eventId, string clientId, DshInteractionDecision decision)
+    {
+        var web = _web.CoreWebView2 ?? throw new InvalidOperationException("dsh WebView 不可用");
+        var pending = _browserInteractionReplies.Begin();
+        try
+        {
+            var outcome = DshInteractionOutcome.Build(decision);
+            var call = $"if(!window.__dshLauncherResolveRemoteEvent)throw new Error('dsh 交互桥接未就绪');window.__dshLauncherResolveRemoteEvent({JsonSerializer.Serialize(eventId)},{JsonSerializer.Serialize(clientId)},{JsonSerializer.Serialize(outcome)},{JsonSerializer.Serialize(pending.RequestId)});";
+            await web.ExecuteScriptAsync(call);
+            await pending.Completion.WaitAsync(TimeSpan.FromSeconds(20));
+        }
+        finally { _browserInteractionReplies.Cancel(pending.RequestId); }
+    }
+
+    private void ShowInteractionOverlay(DshPendingInteraction interaction)
+    {
+        if (_quitting) return;
+        if (_interactionOverlay is { IsDisposed: false }) return;
+
+        var overlay = new DshInteractionOverlayForm(interaction);
+        _interactionOverlay = overlay;
+        overlay.DecisionSelected += decision => SubmitInteractionDecisionAsync(interaction, decision);
+        overlay.FormClosed += (_, _) =>
+        {
+            if (ReferenceEquals(_interactionOverlay, overlay)) _interactionOverlay = null;
+            overlay.Dispose();
+        };
+        overlay.Show();
+        overlay.BringToFront();
+        _notifications.Show(
+            interaction.Kind == DshInteractionKind.Approval ? "需要确认 Agent 操作" : "Agent 正在等待回答",
+            interaction.Kind == DshInteractionKind.Approval
+                ? $"{interaction.SourceName}：{interaction.ToolName ?? "未命名工具"}"
+                : $"{interaction.SourceName}：{interaction.Questions.Count} 个问题待回答",
+            () => SafeUi(() => { if (!overlay.IsDisposed) { overlay.Show(); overlay.BringToFront(); } }),
+            requireInteraction: true);
+    }
+
+    private async Task SubmitInteractionDecisionAsync(DshPendingInteraction interaction, DshInteractionDecision decision)
+    {
+        try { await _interactions.SubmitAsync(interaction, decision); }
+        catch (Exception ex)
+        {
+            SafeUi(() => _notifications.Show("未能提交 Agent 回答", ex.Message, ShowPendingInteraction, requireInteraction: true));
+            throw;
+        }
+    }
+
+    private void ShowPendingInteraction()
+    {
+        if (_interactionOverlay is { IsDisposed: false } overlay)
+        {
+            overlay.Show();
+            overlay.BringToFront();
+            return;
+        }
+        if (_interactions.PendingCount > 0)
+            _notifications.Show("Agent 请求排队中", $"还有 {_interactions.PendingCount} 个请求等待显示。", null, requireInteraction: true);
+    }
+
+    private void UpdatePendingInteractionMenu(int count)
+    {
+        if (_pendingInteractionsMenu == null) return;
+        _pendingInteractionsMenu.Text = $"待处理确认 ({count})";
+        _pendingInteractionsMenu.Enabled = count > 0;
+    }
+
     /// <summary>更新托盘 ToolTip 反映宿主状态。</summary>
     private void UpdateTrayStatus(HostState s)
     {
@@ -1295,6 +1427,7 @@ public sealed class MainForm : Form
             _tray.Visible = false;
             foreach (var c in _connections.Connections) { try { c.StopAsync().GetAwaiter().GetResult(); } catch { } }
             try { _managerAgent.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
+            try { _interactions.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
             Application.Exit();
         }
         else
@@ -1320,6 +1453,7 @@ public sealed class MainForm : Form
         _tray.Visible = false;
         foreach (var c in _connections.Connections) { try { await c.StopAsync(); } catch { } }
         try { await _managerAgent.DisposeAsync(); } catch { }
+        try { await _interactions.DisposeAsync(); } catch { }
         Application.Exit();
     }
 

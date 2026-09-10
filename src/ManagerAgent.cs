@@ -20,9 +20,12 @@ public sealed class ManagerAgent : IAsyncDisposable
     private readonly ConcurrentDictionary<string, HttpClient> _proxyHttpClients = new();
     private readonly ConcurrentDictionary<string, ProxyHttpOperation> _proxyHttpOperations = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _proxyHttpGate = new(MaxConcurrentProxyHttpOperations, MaxConcurrentProxyHttpOperations);
+    private readonly ConcurrentDictionary<string, DshPendingInteraction> _relayedInteractions = new(StringComparer.Ordinal);
+    private ManagerOutboundScheduler? _activeScheduler;
+    private int _remoteEventsSupported;
     private static readonly string[] AgentCapabilities = [
         "command", "proxy.http", "proxy.websocket", "proxy.binary-response-v1",
-        "proxy.http-stream-v1", "proxy.http-request-stream-v1", "proxy.binary-websocket-frame-v1", "proxy.cancel-v1"
+        "proxy.http-stream-v1", "proxy.http-request-stream-v1", "proxy.binary-websocket-frame-v1", "proxy.cancel-v1", "remote.events-v1"
     ];
     // The manager enables streamed responses only for immutable non-JavaScript
     // assets. DSH data/control endpoints retain the established HTTP transport.
@@ -129,6 +132,7 @@ public sealed class ManagerAgent : IAsyncDisposable
         await socket.ConnectAsync(uri, ct);
         _log("[Manager] Agent 通道已连接");
         await using var scheduler = new ManagerOutboundScheduler(socket, ct);
+        _activeScheduler = scheduler;
         await SendAsync(scheduler, new AgentMessage { Type = "register", AgentType = "launcher", AgentVersion = VersionHelper.Current, Capabilities = AgentCapabilities, Instances = Snapshot() }, ct);
         var receive = ReceiveLoopAsync(scheduler, ct);
         try
@@ -142,6 +146,9 @@ public sealed class ManagerAgent : IAsyncDisposable
         }
         finally
         {
+            if (ReferenceEquals(_activeScheduler, scheduler)) _activeScheduler = null;
+            Volatile.Write(ref _remoteEventsSupported, 0);
+            _relayedInteractions.Clear();
             try { socket.Abort(); } catch { }
         }
     }
@@ -166,7 +173,14 @@ public sealed class ManagerAgent : IAsyncDisposable
             ManagerCommand? command;
             try { command = JsonSerializer.Deserialize<ManagerCommand>(json, _json); }
             catch (Exception parseError) { _log("[Manager] 收到无效 manager 消息: " + parseError.Message); continue; }
-            if (command?.Type == "command") _ = ExecuteCommandAsync(scheduler, command, ct);
+            if (command?.Type == "hello")
+            {
+                Volatile.Write(ref _remoteEventsSupported, command.Capabilities?.Contains("remote.events-v1", StringComparer.Ordinal) == true ? 1 : 0);
+                _log(Volatile.Read(ref _remoteEventsSupported) == 1 ? "[Manager] 已协商远程审批事件中继" : "[Manager] 服务端未提供远程审批事件中继，将使用本机浮窗");
+            }
+            else if (command?.Type == "remote_event_result") _ = HandleRelayedResultAsync(command);
+            else if (command?.Type == "remote_event_cancel") { if (!string.IsNullOrWhiteSpace(command.RequestId)) _relayedInteractions.TryRemove(command.RequestId, out _); }
+            else if (command?.Type == "command") _ = ExecuteCommandAsync(scheduler, command, ct);
             else if (command?.Type is "proxy_request" or "proxy_request_start")
             {
                 var proxy = JsonSerializer.Deserialize<ManagerProxyRequest>(json, _json);
@@ -205,6 +219,13 @@ public sealed class ManagerAgent : IAsyncDisposable
                 if (close != null) _ = CloseProxyWebSocketAsync(close);
             }
         }
+    }
+
+    private Task HandleRelayedResultAsync(ManagerCommand command)
+    {
+        if (string.IsNullOrWhiteSpace(command.RequestId) || !_relayedInteractions.TryRemove(command.RequestId, out var interaction)) return Task.CompletedTask;
+        _log("[Manager] 收到远程交互结果，但本轮尚未绑定 Manager 前端回答者: " + interaction.SourceName);
+        return Task.CompletedTask;
     }
 
     private async Task HandleBinaryManagerMessageAsync(ManagerOutboundScheduler scheduler, byte[] payload, CancellationToken ct)
@@ -835,7 +856,7 @@ public sealed class ManagerAgent : IAsyncDisposable
 
     private sealed class EnrollResponse { public string AgentId { get; set; } = ""; public string AgentToken { get; set; } = ""; }
     private sealed class AgentMessage { public string Type { get; set; } = ""; public string AgentType { get; set; } = ""; public string AgentVersion { get; set; } = ""; public string PluginVersion { get; set; } = ""; public string[]? Capabilities { get; set; } public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public bool? OK { get; set; } public string? Error { get; set; } public int Status { get; set; } public Dictionary<string,string>? Headers { get; set; } public List<string>? SetCookies { get; set; } public string? Body { get; set; } public string FrameType { get; set; } = ""; public List<ManagerInstance>? Instances { get; set; } }
-    private sealed class ManagerCommand { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Action { get; set; } = ""; }
+    private sealed class ManagerCommand { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Action { get; set; } = ""; public string[]? Capabilities { get; set; } public JsonElement? Outcome { get; set; } }
     private sealed class ManagerProxyRequest { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string InstanceId { get; set; } = ""; public string Method { get; set; } = "GET"; public string Path { get; set; } = "/"; public Dictionary<string,string> Headers { get; set; } = new(); public string Body { get; set; } = ""; public bool Bootstrap { get; set; } public bool BinaryResponse { get; set; } public bool StreamResponse { get; set; } }
     private sealed class ManagerProxyRequestEnd { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; }
     private sealed class ManagerProxyCancel { public string Type { get; set; } = ""; public string RequestId { get; set; } = ""; public string? Reason { get; set; } }

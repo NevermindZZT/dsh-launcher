@@ -231,6 +231,12 @@ public sealed class ManagerFrontendClient : IDisposable
         return result with { AbsoluteUrl = new Uri(_baseUri, result.Url).AbsoluteUri };
     }
 
+    internal ManagerInteractionEventClient? CreateInteractionEventClient(Action<DshPendingInteraction> onInteraction, Action<string, string> onCancelled)
+    {
+        if (_baseUri == null) return null;
+        return new ManagerInteractionEventClient(_baseUri, _cookies, onInteraction, onCancelled);
+    }
+
     public IReadOnlyList<ManagerBrowserCookie> GetBrowserCookies()
     {
         if (_baseUri == null) return Array.Empty<ManagerBrowserCookie>();

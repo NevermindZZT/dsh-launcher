@@ -449,6 +449,7 @@ public sealed class MainForm : Form
                     case "logs": ShowLogForm(); break;
                     case "plugins": ShowPluginsForm(); break;
                     case "ssh": ShowConnectionPicker(); break;
+                    case "manager": _ = ShowManagerAsync(); break;
                     case "restart": _ = RestartHostAsync(); break;
                     case "about": _ = ShowAboutAsync(); break;
                 }

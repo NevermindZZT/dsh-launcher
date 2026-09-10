@@ -46,6 +46,7 @@ internal static class WebShellBridge
         var workArea = Screen.FromHandle(form.Handle).WorkingArea;
         if (form is MainForm main) main.SetWorkAreaMaximizedBounds(workArea);
         else if (form is ConnectionWindow remote) remote.SetWorkAreaMaximizedBounds(workArea);
+        else if (form is ManagerConnectionWindow manager) manager.SetWorkAreaMaximizedBounds(workArea);
         form.WindowState = FormWindowState.Maximized;
         ApplyShape(form);
     }

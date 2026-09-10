@@ -6,6 +6,7 @@ namespace DshLauncher;
 public sealed class AppSettings
 {
     public ManagerSettings Manager { get; set; } = new();
+    public ManagerFrontendSettings ManagerFrontend { get; set; } = new();
     public int AttachPort { get; set; } = HostSupervisor.DefaultPort;
     public string? WorkingDirectory { get; set; }
     /// <summary>true = 关闭窗口即停止宿主退出；false = 关闭隐藏到托盘（默认）。</summary>
@@ -30,7 +31,13 @@ public sealed class AppSettings
             {
                 var json = File.ReadAllText(SettingsPath);
                 var s = JsonSerializer.Deserialize<AppSettings>(json);
-                if (s != null) return s;
+                if (s != null)
+                {
+                    s.Manager ??= new ManagerSettings();
+                    s.ManagerFrontend ??= new ManagerFrontendSettings();
+                    s.SshConnections ??= new();
+                    return s;
+                }
             }
         }
         catch

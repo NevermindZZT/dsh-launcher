@@ -32,9 +32,10 @@
 - **SSH 远程（多服务器）**：本地窗口 + 远程 dsh —— 基于系统 OpenSSH，支持密钥 / 密码认证、从 `~/.ssh/config` 导入主机、每个服务器独立窗口
 - **配置与插件同步**：本地 dsh 配置（`settings.yaml` 等）与已装插件一键同步到服务器，不用逐个重装
 - **dsh-manager Agent**：可注册到自托管 Go manager，统一上报本地与 SSH 实例状态，并接受远程启动 / 停止 / 重启 / 同步 / 更新命令
+- **原生 dsh-manager 前端**：在 Launcher 内登录 manager，查看 Agent / dsh 实例、执行生命周期命令，并用独立 WebView2 窗口打开 manager 代理的远程 dsh；不依赖 Dashboard，不共享本地或 SSH 会话 Cookie
 - **dsh 直连插件**：不使用 launcher 时，可在 dsh 内安装 [dsh-manager-plugin](https://github.com/NevermindZZT/dsh-manager-plugin)，直接建立 manager 反向连接
 - **Agent 通道**：manager 使用单一 HTTP/WS 端口；公网 HTTPS/WSS 由外部反向代理终止，Agent Token 使用 Windows DPAPI 保护
-- **快捷键**：`Ctrl+Shift+R/L/P/S/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
+- **快捷键**：`Ctrl+Shift+R/L/P/S/M/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / Manager / 退出 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
 
 ## 类似项目对比
 
@@ -94,7 +95,20 @@
 5. 保存并重启启动器，launcher 会自动注册并保持 Agent 长连接；
 6. manager 通过 `/api/v1/instances/{agentId}/{instanceId}/commands` 可以下发 `start`、`stop`、`restart`、`sync`、`update` 命令。
 
-Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文写入 launcher 设置文件。manager Dashboard 已支持通过浏览器会话打开指定实例的原生 dsh Web UI，并转发普通 HTTP 与 WebSocket 会话。
+Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文写入 launcher 设置文件。
+
+#### 原生 Manager 前端
+
+点击标题栏「Manager」、托盘菜单「dsh-manager」或按 `Ctrl+Shift+M`，可在 Launcher 内直接登录 manager。原生面板支持：
+
+- 查看 Agent 在线状态、平台和版本；
+- 查看每个 Agent 的 dsh 实例状态、版本和错误；
+- 下发启动、停止、重启、同步和更新命令；
+- 点击「打开 dsh」在独立 WebView2 窗口中打开 manager 返回的 `/dsh/<session>/` 代理地址；
+- manager 登录会话使用 HttpOnly `dsh-session` Cookie，Launcher 只将 DPAPI 保护后的会话材料保存到本机；
+- 每个 manager 实例使用独立 WebView2 user-data profile，避免与本地 dsh、SSH dsh 或其它 manager 实例串 Cookie。
+
+原生面板不嵌入 manager Dashboard，也不抓取 Dashboard DOM。公网部署仍必须使用 HTTPS/WSS 反向代理；manager 的 `http://` 只适合可信内网。
 
 ### 5. 快捷键
 
@@ -104,6 +118,7 @@ Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文�
 | `Ctrl+Shift+L` | 日志 |
 | `Ctrl+Shift+P` | 插件管理 |
 | `Ctrl+Shift+S` | 设置 |
+| `Ctrl+Shift+M` | dsh-manager 原生面板 |
 | `Ctrl+Shift+C` | 连接选择器（本地 + 各服务器） |
 | `Ctrl+Shift+Y` | 同步本地配置与插件到当前服务器 |
 | `Ctrl+Shift+O` | 打开远端文件夹（目录浏览器 → 添加到工作区） |

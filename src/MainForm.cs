@@ -22,9 +22,12 @@ public sealed class MainForm : Form
     // 连接抽象：本地（HostSupervisor）或 SSH 远端（SshConnection），构造时按设置创建
     private readonly ConnectionManager _connections = new();
     private readonly ManagerAgent _managerAgent;
+    private readonly ManagerFrontendClient _managerFrontend;
     private IDshConnection _current = null!;
 
     private readonly List<ConnectionWindow> _remoteWindows = new();
+    private readonly List<ManagerConnectionWindow> _managerWindows = new();
+    private int _managerRequestId;
     private readonly List<LinkWindow> _linkWindows = new();
     private const string ShowEventName = "Local\\DshLauncher_ShowWindow";
     private EventWaitHandle? _showEvent;
@@ -55,6 +58,7 @@ public sealed class MainForm : Form
     {
         Diag.Log("MainForm ctor start");
         _connections.BuildFrom(_settings);
+        _managerFrontend = new ManagerFrontendClient(_settings);
         _managerAgent = new ManagerAgent(_settings, _connections, line =>
         {
             Diag.Log(line);
@@ -122,6 +126,7 @@ public sealed class MainForm : Form
         trayMenu.Items.Add("日志  (Ctrl+Shift+L)", null, (_, _) => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() }));
         trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true }));
         trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowMainModal("settings"));
+        trayMenu.Items.Add("dsh-manager  (Ctrl+Shift+M)", null, (_, _) => _ = ShowManagerAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("更新 dsh…", null, (_, _) => _ = UpdateDshAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
@@ -177,6 +182,7 @@ public sealed class MainForm : Form
         FormClosed += (_, _) =>
         {
             _notifications.Dispose();
+            _managerFrontend.Dispose();
             if (_host is IDisposable d) { try { d.Dispose(); } catch { } }
             try { _showEvent?.Dispose(); } catch { }
         };
@@ -376,6 +382,11 @@ public sealed class MainForm : Form
                 if (action == "plugins.import") { _ = ImportPluginsAsync(); return; }
                 if (action == "launcher.checkUpdate") { _ = ShowAboutAsync(checkUpdates: true); return; }
                 if (action == "dsh.update") { _ = UpdateDshAsync(); return; }
+                if (action == "manager.login") { _ = LoginManagerAsync(payload); return; }
+                if (action == "manager.refresh") { _ = ShowManagerAsync(); return; }
+                if (action == "manager.logout") { _ = LogoutManagerAsync(); return; }
+                if (action == "manager.command") { _ = RunManagerCommandAsync(payload); return; }
+                if (action == "manager.open") { _ = OpenManagerInstanceAsync(payload); return; }
                 if (action.StartsWith("plugins.") && payload.ValueKind == JsonValueKind.Object)
                 {
                     var pkg = payload.TryGetProperty("package", out var q) ? q.GetString() : null;
@@ -636,6 +647,7 @@ public sealed class MainForm : Form
             case Keys.Control | Keys.Shift | Keys.L: ShowLogForm(); return true;
             case Keys.Control | Keys.Shift | Keys.P: ShowPluginsForm(); return true;
             case Keys.Control | Keys.Shift | Keys.S: ShowWebModal("settings"); return true;
+            case Keys.Control | Keys.Shift | Keys.M: _ = ShowManagerAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.Q: OnQuit(); return true;
             case Keys.Control | Keys.Shift | Keys.C: ShowConnectionPicker(); return true;
         }
@@ -925,6 +937,162 @@ public sealed class MainForm : Form
     private string ReadHistory() => ReadLocalHistory();
 
     private void ShowPluginsModal() => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true });
+
+    private async Task ShowManagerAsync(string? notice = null, string? error = null)
+    {
+        var requestId = Interlocked.Increment(ref _managerRequestId);
+        var initial = new ManagerDashboardSnapshot
+        {
+            ServerUrl = _managerFrontend.CurrentServerUrl,
+            Authenticated = false,
+            Username = _settings.ManagerFrontend.Username,
+            Notice = notice ?? (string.IsNullOrWhiteSpace(error) ? "正在连接 manager…" : null),
+            Error = error,
+        };
+        ShowMainModal("manager", BuildManagerModalData(initial));
+
+        ManagerDashboardSnapshot snapshot;
+        try
+        {
+            snapshot = await _managerFrontend.LoadDashboardAsync();
+        }
+        catch (Exception ex)
+        {
+            snapshot = new ManagerDashboardSnapshot
+            {
+                ServerUrl = _managerFrontend.CurrentServerUrl,
+                Authenticated = false,
+                Username = _settings.ManagerFrontend.Username,
+                Error = ex.Message,
+            };
+        }
+
+        if (notice != null || error != null)
+            snapshot = new ManagerDashboardSnapshot
+            {
+                ServerUrl = snapshot.ServerUrl,
+                Authenticated = snapshot.Authenticated,
+                Username = snapshot.Username,
+                ManagerVersion = snapshot.ManagerVersion,
+                Agents = snapshot.Agents,
+                Instances = snapshot.Instances,
+                Diagnostics = snapshot.Diagnostics,
+                Error = error ?? snapshot.Error,
+                Notice = notice,
+            };
+        if (requestId == Volatile.Read(ref _managerRequestId) && !_quitting && !IsDisposed)
+            ShowMainModal("manager", BuildManagerModalData(snapshot));
+    }
+
+    private object BuildManagerModalData(ManagerDashboardSnapshot snapshot)
+    {
+        return new
+        {
+            page = "manager",
+            manager = new
+            {
+                serverUrl = snapshot.ServerUrl,
+                authenticated = snapshot.Authenticated,
+                username = snapshot.Username,
+                managerVersion = snapshot.ManagerVersion,
+                agents = snapshot.Agents,
+                instances = snapshot.Instances,
+                diagnostics = snapshot.Diagnostics,
+                error = snapshot.Error,
+                notice = snapshot.Notice,
+            },
+        };
+    }
+
+    private async Task LoginManagerAsync(JsonElement payload)
+    {
+        var serverUrl = GetPayloadString(payload, "serverUrl");
+        var username = GetPayloadString(payload, "username");
+        var password = GetPayloadString(payload, "password");
+        try
+        {
+            await _managerFrontend.LoginAsync(serverUrl, username, password);
+            await ShowManagerAsync(notice: "manager 登录成功");
+        }
+        catch (Exception ex)
+        {
+            await ShowManagerAsync(error: ex.Message);
+        }
+    }
+
+    private async Task LogoutManagerAsync()
+    {
+        try
+        {
+            await _managerFrontend.LogoutAsync();
+            await ShowManagerAsync(notice: "已退出 manager");
+        }
+        catch (Exception ex)
+        {
+            await ShowManagerAsync(error: ex.Message);
+        }
+    }
+
+    private async Task RunManagerCommandAsync(JsonElement payload)
+    {
+        var agentId = GetPayloadString(payload, "agentId");
+        var instanceId = GetPayloadString(payload, "instanceId");
+        var action = GetPayloadString(payload, "action");
+        try
+        {
+            var result = await _managerFrontend.SendCommandAsync(agentId, instanceId, action);
+            await Task.Delay(250);
+            await ShowManagerAsync(notice: $"已提交 {action} 命令" + (string.IsNullOrWhiteSpace(result.RequestId) ? "" : $"（{result.RequestId}）"));
+        }
+        catch (Exception ex)
+        {
+            await ShowManagerAsync(error: ex.Message);
+        }
+    }
+
+    private async Task OpenManagerInstanceAsync(JsonElement payload)
+    {
+        var agentId = GetPayloadString(payload, "agentId");
+        var instanceId = GetPayloadString(payload, "instanceId");
+        try
+        {
+            var result = await _managerFrontend.OpenInstanceAsync(agentId, instanceId);
+            if (string.IsNullOrWhiteSpace(result.AbsoluteUrl)) throw new InvalidOperationException("manager 未返回可用的 dsh 地址。");
+            var target = new Uri(result.AbsoluteUrl, UriKind.Absolute);
+            var existing = _managerWindows.FirstOrDefault(x => string.Equals(x.TargetKey, target.AbsoluteUri, StringComparison.OrdinalIgnoreCase));
+            if (existing != null && !existing.IsDisposed)
+            {
+                existing.Show();
+                existing.Activate();
+                return;
+            }
+            var window = new ManagerConnectionWindow(this, target, $"{agentId}/{instanceId}", _managerFrontend.GetBrowserCookies());
+            _managerWindows.Add(window);
+            window.FormClosed += (_, _) => _managerWindows.Remove(window);
+            window.Show();
+        }
+        catch (Exception ex)
+        {
+            await ShowManagerAsync(error: ex.Message);
+        }
+    }
+
+    internal Task ShowManagerFromChildAsync() => ShowManagerAsync();
+
+    internal void ShowAboutFromChild() => _ = ShowAboutAsync();
+
+    internal void ShowLogsFromChild() => ShowLogForm();
+
+    internal void ShowPluginsFromChild() => ShowPluginsForm();
+
+    private static string GetPayloadString(JsonElement payload, string name)
+    {
+        return payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? ""
+            : "";
+    }
 
     /// <summary>显示主窗口并在 UI 队列中打开本地 modal，避免隐藏窗口上的 WebView 调用。</summary>
     private void ShowMainModal(string page, object? data = null)

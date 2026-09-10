@@ -487,7 +487,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
         }
         sb.AppendLine($"配置: {configCount} 个文件");
 
-        // 2) 插件同步：本地 dependencies 里的插件（有 Spec 的）→ 远端逐个 dsh plugin add
+        // 2) 插件同步：本地 dependencies 里的插件（有版本规格的）→ 远端逐个 dsh plugin add
         //    （注意：不能用 IsBundle 过滤 —— 用户装的插件也出现在 dsh 的 bundles 内置列表里）
         var plugins = pm.ListPlugins().Where(p => !string.IsNullOrEmpty(p.Spec)).ToList();
         onOutput?.Invoke(plugins.Count == 0
@@ -497,7 +497,8 @@ public sealed class SshConnection : IDshConnection, IDisposable
         foreach (var pl in plugins)
         {
             ct.ThrowIfCancellationRequested();
-            var spec = $"{pl.Package}@{pl.Spec}";
+            var selectedVersion = pl.Version ?? pl.Spec;
+            var spec = $"{pl.Package}@{selectedVersion}";
             onOutput?.Invoke($">>> dsh plugin --profile web add {spec}");
             var code = await RunPluginAsync(new[] { "add", spec }, onOutput, ct);
             if (code == 0) { pluginCount++; onOutput?.Invoke($"  插件 {pl.Package} ✓"); }

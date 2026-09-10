@@ -46,7 +46,7 @@ public sealed class PluginsForm : ThemedForm
         Height = 720;
         MinimumSize = new Size(860, 560);
 
-        _list.SetColumns(("插件", 0.5f), ("类型", 0.16f), ("规格", 0.34f));
+        _list.SetColumns(("插件", 0.43f), ("类型", 0.16f), ("版本", 0.18f), ("规格", 0.23f));
 
         var top = new FlowLayoutPanel
         {
@@ -109,7 +109,7 @@ public sealed class PluginsForm : ThemedForm
             return;
         }
         _list.SetRows(_manager.ListPlugins().Select(pl => new ListViewRow(
-            new[] { pl.Package, (pl.IsBundle ? "bundle" : "依赖") + (pl.IsTemplate ? "·模板" : ""), pl.Spec ?? "" },
+            new[] { pl.Package, (pl.IsBundle ? "bundle" : "依赖") + (pl.IsTemplate ? "·模板" : ""), pl.Version ?? "", pl.Spec ?? "" },
             pl.Package)));
         // 路径压缩显示（完整路径放 ToolTip，避免长路径被裁剪）
         var shortProfile = CompactPath(_manager.ProfileDir);

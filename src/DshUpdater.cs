@@ -6,19 +6,59 @@ namespace DshLauncher;
 
 /// <summary>
 /// dsh 安装检测、版本检查与安装/更新（npm 全局安装 @deepseek-ai/dsh）。
-/// 版本检查走 npm registry HTTP；安装/更新执行 `npm install -g @deepseek-ai/dsh@latest`。
+/// 版本检查走 npm registry（通过 Node HTTPS 以兼容部分 Windows Schannel 环境）；安装/更新执行 `npm install -g @deepseek-ai/dsh@latest`。
 /// </summary>
 public sealed class DshUpdater
 {
     public const string PackageName = "@deepseek-ai/dsh";
-    private const string RegistryUrl = "https://registry.npmjs.org/@deepseek-ai/dsh/latest";
+    private const string RegistryUrl = "https://registry.npmjs.org/@deepseek-ai%2fdsh/latest";
+
+    public sealed record UpdateCheckResult(
+        string? InstalledVersion,
+        string? LatestVersion,
+        string? Error)
+    {
+        public bool IsUpdateAvailable => IsNewer(LatestVersion, InstalledVersion);
+    }
 
     /// <summary>dsh 是否已安装（bin.js 可解析）。</summary>
     public static bool IsInstalled() => HostSupervisor.ResolveDshPaths().BinJs != null;
 
-    /// <summary>已安装版本（`dsh --version`，如 0.1.0-rc.6）。</summary>
+    /// <summary>已安装版本（如 0.1.0-rc.6）。优先使用已解析的 node + bin.js，避免 PATH 缺失导致误报未安装。</summary>
     public static async Task<string?> GetInstalledVersionAsync()
     {
+        var (node, binJs) = HostSupervisor.ResolveDshPaths();
+        if (node != null && binJs != null)
+        {
+            try
+            {
+                var direct = new ProcessStartInfo
+                {
+                    FileName = node,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
+                };
+                direct.ArgumentList.Add(binJs);
+                direct.ArgumentList.Add("--version");
+                using var process = Process.Start(direct);
+                if (process != null)
+                {
+                    var text = await process.StandardOutput.ReadToEndAsync();
+                    await process.WaitForExitAsync();
+                    var first = text.Trim().Split('\n')[0].Trim();
+                    if (!string.IsNullOrEmpty(first)) return first;
+                }
+            }
+            catch
+            {
+                // 绝对路径探测失败时继续使用 dsh shim 兜底。
+            }
+        }
+
         try
         {
             var psi = new ProcessStartInfo
@@ -47,19 +87,45 @@ public sealed class DshUpdater
     }
 
     /// <summary>npm registry 最新版本（如 0.1.0-rc.8）。</summary>
-    public static async Task<string?> GetLatestVersionAsync()
+    public static async Task<string?> GetLatestVersionAsync(CancellationToken ct = default)
     {
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            var json = await client.GetStringAsync(RegistryUrl);
+            var json = await NodeHttpClient.GetStringAsync(
+                RegistryUrl,
+                "DshLauncher/" + VersionHelper.Current.TrimStart('v'),
+                ct);
             using var doc = JsonDocument.Parse(json);
             return doc.RootElement.GetProperty("version").GetString();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>同时读取当前 dsh 版本和 npm registry 最新版本。</summary>
+    public static async Task<UpdateCheckResult> CheckForUpdateAsync(CancellationToken ct = default)
+    {
+        var installedTask = GetInstalledVersionAsync();
+        var latestTask = GetLatestVersionAsync(ct);
+        string? installed = null;
+        string? latest = null;
+        try { installed = await installedTask; } catch (Exception ex) { return new UpdateCheckResult(null, null, "读取当前 dsh 版本失败：" + ex.Message); }
+        try { latest = await latestTask; } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; } catch { }
+        return CreateCheckResult(installed, latest);
+    }
+
+    /// <summary>根据已读取的版本构造检查结果，供 SSH 远程 dsh 复用。</summary>
+    public static UpdateCheckResult CreateCheckResult(string? installed, string? latest)
+    {
+        if (latest == null) return new UpdateCheckResult(installed, null, "无法从 npm registry 获取 dsh 最新版本");
+        if (installed == null) return new UpdateCheckResult(null, latest, "未检测到当前 dsh 版本");
+        return new UpdateCheckResult(installed, latest, null);
     }
 
     /// <summary>比较版本：latest 是否严格新于 installed（忽略预发布后缀，按数字段比较）。</summary>

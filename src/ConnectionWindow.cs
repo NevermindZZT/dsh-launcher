@@ -23,6 +23,7 @@ public sealed class ConnectionWindow : Form
     };
     private bool _quitting;
     private bool _syncing;
+    private int _aboutRequestId;
 
     public IDshConnection Connection => _conn;
 
@@ -88,7 +89,107 @@ public sealed class ConnectionWindow : Form
         catch (Exception ex)
         {
             HideLoading();
-            MessageBox.Show(this, ex.Message, "连接失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, MainForm.FormatConnectionFailure(_conn, ex), "连接失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async Task ShowAboutAsync(bool checkUpdates = false)
+    {
+        var requestId = Interlocked.Increment(ref _aboutRequestId);
+        WebModalRouter.Open(_web, "about", MainForm.BuildAboutData("loading", null, null, null, checkUpdates, true));
+
+        string? dshVersion = null;
+        LauncherUpdater.UpdateCheckResult? launcherUpdate = null;
+        DshUpdater.UpdateCheckResult? dshUpdate = null;
+        if (checkUpdates)
+        {
+            // 远程 dsh 的当前版本由 SSH 探测，最新版本仍从 npm registry 获取。
+            var launcherTask = LauncherUpdater.CheckForUpdateAsync();
+            var remoteVersionTask = Task.Run(async () => await _conn.GetInstalledVersionAsync());
+            var latestDshTask = DshUpdater.GetLatestVersionAsync();
+            try { launcherUpdate = await launcherTask; }
+            catch (Exception ex) { Diag.Log("检查 DshLauncher 更新失败: " + ex.Message); }
+            try { dshVersion = await remoteVersionTask; }
+            catch (Exception ex) { Diag.Log($"读取 {_conn.DisplayName} 的 dsh 版本失败: {ex.Message}"); }
+            string? latestDsh = null;
+            try { latestDsh = await latestDshTask; } catch (Exception ex) { Diag.Log("检查远程 dsh 更新失败: " + ex.Message); }
+            dshUpdate = DshUpdater.CreateCheckResult(dshVersion, latestDsh);
+        }
+        else
+        {
+            try
+            {
+                dshVersion = await Task.Run(async () => await _conn.GetInstalledVersionAsync());
+            }
+            catch (Exception ex)
+            {
+                Diag.Log($"读取 {_conn.DisplayName} 的 dsh 版本失败: {ex.Message}");
+            }
+        }
+
+        if (IsDisposed || _quitting || requestId != Volatile.Read(ref _aboutRequestId)) return;
+        WebModalRouter.Open(_web, "about", MainForm.BuildAboutData(dshVersion == null ? "missing" : "ready", dshVersion, launcherUpdate, dshUpdate, false, true));
+    }
+
+
+    private async Task UpdateDshFromAboutAsync()
+    {
+        string? installed = null;
+        string? latest = null;
+        try
+        {
+            installed = await Task.Run(async () => await _conn.GetInstalledVersionAsync());
+            latest = await DshUpdater.GetLatestVersionAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "dsh 更新检查失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        var check = DshUpdater.CreateCheckResult(installed, latest);
+        if (check.Error != null)
+        {
+            MessageBox.Show(this, check.Error, "dsh 更新检查失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (!check.IsUpdateAvailable)
+        {
+            MessageBox.Show(this, $"dsh 已是最新版本（{check.InstalledVersion}）", "dsh 更新",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(this,
+            $"当前 dsh {check.InstalledVersion}，最新 {check.LatestVersion}。是否现在更新？",
+            "dsh 更新", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes) return;
+
+        ShowLoading("正在更新远端 dsh…");
+        _conn.AppendLog(">>> npm install -g @deepseek-ai/dsh@latest");
+        try
+        {
+            var code = await _conn.UpdateDshAsync(line => _conn.AppendLog(line));
+            if (code != 0)
+            {
+                HideLoading();
+                MessageBox.Show(this, $"更新失败（exit {code}），详见日志。", "dsh 更新失败",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            _conn.AppendLog("dsh 更新成功，正在重启远端 dsh…");
+            await _conn.RestartAsync();
+            HideLoading();
+            MessageBox.Show(this, "dsh 更新成功，远端实例已重启。", "更新完成",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _ = ShowAboutAsync(checkUpdates: true);
+        }
+        catch (Exception ex)
+        {
+            HideLoading();
+            MessageBox.Show(this, MainForm.FormatConnectionFailure(_conn, ex), "dsh 更新失败",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -173,9 +274,10 @@ public sealed class ConnectionWindow : Form
                         _main.OpenSshConnection(n.GetString()!);
                     return;
                 }
-                if (action == "logs.open") { WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return; }
-                if (action == "plugins.open") { WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>() }); return; }
-                if (action == "folder.list") { _ = ListFolderAsync(payload); return; }
+                 if (action == "logs.open") { WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return; }
+                 if (action == "plugins.open") { WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); return; }
+                 if (action == "launcher.checkUpdate") { _ = ShowAboutAsync(checkUpdates: true); return; }
+                 if (action == "dsh.update") { _ = UpdateDshFromAboutAsync(); return; }
                 if (action == "folder.parent") { _ = ParentFolderAsync(payload); return; }
                 if (action == "folder.select") { _ = SelectFolderAsync(payload); return; }
                 if (action == "folder.create") { _ = CreateFolderAsync(payload); return; }
@@ -187,12 +289,12 @@ public sealed class ConnectionWindow : Form
                 {
                     case "settings": WebModalRouter.Open(_web, "settings"); break;
                     case "logs": WebModalRouter.Open(_web, "logs"); break;
-                    case "plugins": WebModalRouter.Open(_web, "plugins"); break;
+                    case "plugins": WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); break;
                     case "ssh":
                         if (_main != null) WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
                         break;
                     case "restart": _ = RestartAsync(); break;
-                    case "about": WebModalRouter.Open(_web, "about", new { page="about", version=VersionHelper.Current }); break;
+                    case "about": _ = ShowAboutAsync(); break;
                 }
             });
         };
@@ -437,7 +539,7 @@ public sealed class ConnectionWindow : Form
         {
             case Keys.Control | Keys.Shift | Keys.R: _ = RestartAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.L: WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return true;
-            case Keys.Control | Keys.Shift | Keys.P: WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>() }); return true;
+            case Keys.Control | Keys.Shift | Keys.P: WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); return true;
             case Keys.Control | Keys.Shift | Keys.C: OpenPicker(); return true;
             case Keys.Control | Keys.Shift | Keys.Y: _ = SyncFromLocalAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.O: OpenRemoteFolder(); return true;

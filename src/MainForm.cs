@@ -30,6 +30,7 @@ public sealed class MainForm : Form
     private EventWaitHandle? _showEvent;
     private Thread? _showWatcher;
     private string? _pendingUpdate;
+    private int _aboutRequestId;
     private bool _quitting;
     private bool _loadingHiddenGuard;
 
@@ -119,7 +120,7 @@ public sealed class MainForm : Form
         trayMenu.Items.Add("重启宿主  (Ctrl+Shift+R)", null, (_, _) => _ = RestartHostAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("日志  (Ctrl+Shift+L)", null, (_, _) => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() }));
-        trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins() }));
+        trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true }));
         trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowMainModal("settings"));
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("更新 dsh…", null, (_, _) => _ = UpdateDshAsync());
@@ -247,7 +248,7 @@ public sealed class MainForm : Form
     {
         ShowLoading("正在启动本地 dsh…");
         try { await _current.StartAsync(); }
-        catch (Exception ex) { HideLoading(); MessageBox.Show(this, ex.Message, "连接失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        catch (Exception ex) { HideLoading(); MessageBox.Show(this, GetHostFailureMessage(ex), "连接失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 
     /// <summary>显示启动加载层并设置提示文字。</summary>
@@ -333,7 +334,7 @@ public sealed class MainForm : Form
         catch (Exception ex)
         {
             HideLoading();
-            MessageBox.Show(this, ex.Message, "DshLauncher 启动失败",
+            MessageBox.Show(this, GetHostFailureMessage(ex), "DshLauncher 启动失败",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -376,7 +377,19 @@ public sealed class MainForm : Form
                 if (action == "logs.open") { ShowWebModal("logs", new { page="logs", history=ReadHistory() }); return; }
                 if (action == "logs.clear") { try { File.WriteAllText(_host.LogFile, string.Empty); } catch { } ShowWebModal("logs", new { page="logs", history=string.Empty }); return; }
                 if (action == "plugins.open" || action == "plugins.list") { ShowPluginsModal(); return; }
-                if (action.StartsWith("plugins.") && payload.ValueKind == JsonValueKind.Object) { var pkg=payload.TryGetProperty("package",out var q)?q.GetString():null; var verb=action[9..]; if (verb=="install"&&!string.IsNullOrWhiteSpace(pkg)) _=_host.RunPluginAsync(new[]{"add",pkg},x=>_host.AppendLog(x)); else if (verb=="remove"&&!string.IsNullOrWhiteSpace(pkg)) _=_host.RunPluginAsync(new[]{"remove",pkg},x=>_host.AppendLog(x)); else if (verb=="update") _=_host.RunPluginAsync(string.IsNullOrWhiteSpace(pkg)?new[]{"update"}:new[]{"update",pkg},x=>_host.AppendLog(x)); return; }
+                if (action == "plugins.export") { ExportPlugins(); return; }
+                if (action == "plugins.import") { _ = ImportPluginsAsync(); return; }
+                if (action == "launcher.checkUpdate") { _ = ShowAboutAsync(checkUpdates: true); return; }
+                if (action == "dsh.update") { _ = UpdateDshAsync(); return; }
+                if (action.StartsWith("plugins.") && payload.ValueKind == JsonValueKind.Object)
+                {
+                    var pkg = payload.TryGetProperty("package", out var q) ? q.GetString() : null;
+                    var verb = action[9..];
+                    if (verb == "install" && !string.IsNullOrWhiteSpace(pkg)) _ = _host.RunPluginAsync(new[] { "add", pkg }, x => _host.AppendLog(x));
+                    else if (verb == "remove" && !string.IsNullOrWhiteSpace(pkg)) _ = _host.RunPluginAsync(new[] { "remove", pkg }, x => _host.AppendLog(x));
+                    else if (verb == "update") _ = _host.RunPluginAsync(string.IsNullOrWhiteSpace(pkg) ? new[] { "update" } : new[] { "update", pkg }, x => _host.AppendLog(x));
+                    return;
+                }
                 if (action == "ssh.form")
                 {
                     var name = payload.TryGetProperty("name", out var n) ? n.GetString() : null;
@@ -431,7 +444,7 @@ public sealed class MainForm : Form
                     case "plugins": ShowPluginsForm(); break;
                     case "ssh": ShowConnectionPicker(); break;
                     case "restart": _ = RestartHostAsync(); break;
-                    case "about": ShowWebModal("about"); break;
+                    case "about": _ = ShowAboutAsync(); break;
                 }
             });
         };
@@ -574,7 +587,7 @@ public sealed class MainForm : Form
         catch (Exception ex)
         {
             HideLoading();
-            MessageBox.Show(this, ex.Message, "重启失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, GetHostFailureMessage(ex), "重启失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -651,11 +664,228 @@ public sealed class MainForm : Form
     private void ShowLogForm() => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() });
 
     /// <summary>打开（或聚焦）插件管理窗口。</summary>
-    private void ShowPluginsForm() => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins() });
+    private void ShowPluginsForm() => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true });
 
     private void ShowWebModal(string page) => WebModalRouter.Open(_web, _settings, page);
 
     private void ShowWebModal(string page, object data) => WebModalRouter.Open(_web, page, data);
+
+    /// <summary>打开关于窗口；检查按钮会并行检查 DshLauncher 与当前 dsh。</summary>
+    private async Task ShowAboutAsync(bool checkUpdates = false)
+    {
+        var requestId = Interlocked.Increment(ref _aboutRequestId);
+        ShowMainModal("about", BuildAboutData("loading", null, null, null, checkUpdates, true));
+
+        string? dshVersion = null;
+        LauncherUpdater.UpdateCheckResult? launcherUpdate = null;
+        DshUpdater.UpdateCheckResult? dshUpdate = null;
+        if (checkUpdates)
+        {
+            // 两个检查彼此独立并行执行，避免网络/进程探测串行叠加等待时间。
+            var launcherTask = LauncherUpdater.CheckForUpdateAsync();
+            var dshTask = DshUpdater.CheckForUpdateAsync();
+            try { launcherUpdate = await launcherTask; }
+            catch (Exception ex) { Diag.Log("检查 DshLauncher 更新失败: " + ex.Message); }
+            try { dshUpdate = await dshTask; }
+            catch (Exception ex) { Diag.Log("检查 dsh 更新失败: " + ex.Message); }
+            dshVersion = dshUpdate?.InstalledVersion;
+        }
+        else
+        {
+            try
+            {
+                dshVersion = await _host.GetInstalledVersionAsync();
+            }
+            catch (Exception ex)
+            {
+                Diag.Log("读取 dsh 版本失败: " + ex.Message);
+            }
+        }
+
+        if (IsDisposed || _quitting || requestId != Volatile.Read(ref _aboutRequestId)) return;
+        ShowMainModal("about", BuildAboutData(dshVersion == null ? "missing" : "ready", dshVersion, launcherUpdate, dshUpdate, false, true));
+    }
+
+    internal static object BuildAboutData(
+        string dshVersionState,
+        string? dshVersion,
+        LauncherUpdater.UpdateCheckResult? launcherUpdate,
+        DshUpdater.UpdateCheckResult? dshUpdate,
+        bool checking,
+        bool canUpdateDsh)
+    {
+        var launcherState = checking
+            ? "checking"
+            : launcherUpdate == null
+                ? "idle"
+                : launcherUpdate.Error != null
+                    ? "error"
+                    : launcherUpdate.IsUpdateAvailable ? "available" : "upToDate";
+        var dshState = checking
+            ? "checking"
+            : dshUpdate == null
+                ? "idle"
+                : dshUpdate.Error != null
+                    ? "error"
+                    : dshUpdate.IsUpdateAvailable ? "available" : "upToDate";
+
+        var launcherMessage = launcherUpdate?.Error;
+        if (launcherMessage == null && launcherUpdate?.IsUpdateAvailable == true)
+            launcherMessage = $"发现新版本 {launcherUpdate.LatestVersion}";
+        if (launcherMessage == null && launcherUpdate != null)
+            launcherMessage = launcherUpdate.LatestVersion == null
+                ? "无法获取最新版本"
+                : $"当前已是最新版本（{launcherUpdate.LatestVersion}）";
+
+        var dshMessage = dshUpdate?.Error;
+        if (dshMessage == null && dshUpdate?.IsUpdateAvailable == true)
+            dshMessage = $"发现新版本 {dshUpdate.LatestVersion}（当前 {dshUpdate.InstalledVersion}）";
+        if (dshMessage == null && dshUpdate != null)
+            dshMessage = dshUpdate.LatestVersion == null
+                ? "无法获取最新版本"
+                : $"当前已是最新版本（{dshUpdate.LatestVersion}）";
+
+        return new
+        {
+            page = "about",
+            version = VersionHelper.Current,
+            projectUrl = LauncherUpdater.ProjectUrl,
+            dshVersion,
+            dshVersionState,
+            launcherUpdateState = launcherState,
+            launcherLatestVersion = launcherUpdate?.LatestVersion,
+            launcherReleaseUrl = launcherUpdate?.ReleaseUrl,
+            launcherDownloadUrl = launcherUpdate?.DownloadUrl,
+            launcherReleaseName = launcherUpdate?.ReleaseName,
+            launcherUpdateMessage = launcherMessage,
+            dshUpdateState = dshState,
+            dshLatestVersion = dshUpdate?.LatestVersion,
+            dshUpdateMessage = dshMessage,
+            canUpdateDsh,
+        };
+    }
+
+
+    private void ExportPlugins()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = "导出插件列表",
+            Filter = "DshLauncher 插件列表 (*.json)|*.json|JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*",
+            DefaultExt = "json",
+            AddExtension = true,
+            FileName = $"dsh-plugins-{DateTime.Now:yyyyMMdd-HHmmss}.json",
+            OverwritePrompt = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var manager = new PluginManager();
+            var count = manager.ListPlugins().Count;
+            manager.ExportToFile(dialog.FileName);
+            MessageBox.Show(this, $"已导出 {count} 个插件的信息（包含实际安装版本）。", "导出完成",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "导出插件列表失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async Task ImportPluginsAsync()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "导入插件列表",
+            Filter = "DshLauncher 插件列表 (*.json)|*.json|JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        PluginManager.PluginListDocument document;
+        try
+        {
+            document = PluginManager.ReadFromFile(dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "导入插件列表失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        var items = PluginManager.GetImportItems(document);
+        if (items.Count == 0)
+        {
+            MessageBox.Show(this, "文件中没有可安装的插件（内置模板会自动跳过）。", "导入插件列表",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var preview = string.Join(Environment.NewLine, items.Take(12).Select(x =>
+            "• " + x.InstallSpecifier));
+        if (items.Count > 12) preview += Environment.NewLine + $"…以及另外 {items.Count - 12} 个插件";
+        var confirm = MessageBox.Show(this,
+            $"将按导出文件中的版本安装 {items.Count} 个插件：\n\n{preview}\n\n是否继续？",
+            "确认导入插件列表", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes) return;
+
+        ShowLogForm();
+        _host.AppendLog($">>> 导入插件列表: {dialog.FileName}");
+        _host.AppendLog($"待安装插件: {items.Count} 个（按导出版本优先）");
+        var succeeded = 0;
+        var failed = new List<string>();
+        foreach (var item in items)
+        {
+            var spec = item.InstallSpecifier;
+            if (string.IsNullOrWhiteSpace(spec)) continue;
+            _host.AppendLog($">>> dsh plugin --profile web add {spec}");
+            try
+            {
+                var code = await _host.RunPluginAsync(new[] { "add", spec }, line => _host.AppendLog(line));
+                if (code == 0)
+                {
+                    succeeded++;
+                    _host.AppendLog($"插件 {item.Package} ✓");
+                }
+                else
+                {
+                    failed.Add($"{item.Package}（exit {code}）");
+                    _host.AppendLog($"插件 {item.Package} 失败（exit {code}）");
+                }
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{item.Package}（{ex.Message}）");
+                _host.AppendLog($"插件 {item.Package} 异常: {ex.Message}");
+            }
+        }
+
+        var restartFailed = false;
+        if (succeeded > 0)
+        {
+            ShowLoading("正在重启 dsh 使插件生效…");
+            try
+            {
+                await _host.RestartAsync();
+            }
+            catch (Exception ex)
+            {
+                restartFailed = true;
+                HideLoading();
+                _host.AppendLog("重启 dsh 失败: " + ex.Message);
+            }
+        }
+        ShowPluginsModal();
+
+        var summary = $"导入完成：成功 {succeeded} 个，失败 {failed.Count} 个。";
+        if (restartFailed) summary += "\n\ndsh 重启失败，请查看日志。";
+        if (failed.Count > 0)
+            summary += "\n\n失败项：\n" + string.Join("\n", failed.Take(12));
+        MessageBox.Show(this, summary, "导入插件列表", MessageBoxButtons.OK,
+            failed.Count == 0 && !restartFailed ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
 
     internal void ShowSystemNotification(string title, string body, Action activate, bool requireInteraction = false) =>
         SafeUi(() => _notifications.Show(title, body, activate, requireInteraction));
@@ -699,7 +929,7 @@ public sealed class MainForm : Form
 
     private string ReadHistory() => ReadLocalHistory();
 
-    private void ShowPluginsModal() => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins() });
+    private void ShowPluginsModal() => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true });
 
     /// <summary>显示主窗口并在 UI 队列中打开本地 modal，避免隐藏窗口上的 WebView 调用。</summary>
     private void ShowMainModal(string page, object? data = null)
@@ -776,40 +1006,55 @@ public sealed class MainForm : Form
         try
         {
             await Task.Delay(6000);
-            var installed = await _host.GetInstalledVersionAsync();
-            var latest = await DshUpdater.GetLatestVersionAsync();
-            if (DshUpdater.IsNewer(latest, installed))
+            var check = await DshUpdater.CheckForUpdateAsync();
+            if (check.IsUpdateAvailable)
             {
-                _pendingUpdate = latest;
-                Diag.Log($"dsh update available: {installed} -> {latest}");
+                _pendingUpdate = check.LatestVersion;
+                Diag.Log($"dsh update available: {check.InstalledVersion} -> {check.LatestVersion}");
                 _tray.ShowBalloonTip(6000, "DeepSeek Harness",
-                    $"dsh 有新版本 {latest}（当前 {installed}）。右键托盘菜单「更新 dsh」即可升级。",
+                    $"dsh 有新版本 {check.LatestVersion}（当前 {check.InstalledVersion}）。右键托盘菜单「更新 dsh」即可升级。",
                     ToolTipIcon.Info);
             }
+            else if (check.Error != null)
+            {
+                Diag.Log("dsh update check failed: " + check.Error);
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            // 检查失败静默
+            Diag.Log("dsh update check exception: " + ex.Message);
         }
     }
 
     /// <summary>检查并更新 dsh（npm install -g @deepseek-ai/dsh@latest），完成后重启宿主。</summary>
     private async Task UpdateDshAsync()
     {
-        var installed = await _host.GetInstalledVersionAsync();
-        var latest = await DshUpdater.GetLatestVersionAsync();
-        if (!DshUpdater.IsNewer(latest, installed))
+        DshUpdater.UpdateCheckResult check;
+        try
         {
-            MessageBox.Show(this, "dsh 已是最新版本" + (installed != null ? $"（{installed}）" : ""),
+            check = await DshUpdater.CheckForUpdateAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "dsh 更新检查失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (check.Error != null)
+        {
+            MessageBox.Show(this, check.Error, "dsh 更新检查失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (!check.IsUpdateAvailable)
+        {
+            MessageBox.Show(this, $"dsh 已是最新版本（{check.InstalledVersion}）",
                 "dsh 更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
+
         var res = MessageBox.Show(this,
-            installed == null
-                ? $"检测到最新版 dsh {latest}。是否现在安装？"
-                : $"当前 dsh {installed}，最新 {latest}。是否现在更新？",
-            "dsh 更新", MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
-        if (res != DialogResult.OK) return;
+            $"当前 dsh {check.InstalledVersion}，最新 {check.LatestVersion}。是否现在更新？",
+            "dsh 更新", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (res != DialogResult.Yes) return;
 
         ShowLogForm();
         _host.AppendLog(">>> npm install -g @deepseek-ai/dsh@latest");
@@ -837,6 +1082,7 @@ public sealed class MainForm : Form
             MessageBox.Show(this, ex.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
+
 
     /// <summary>共享应用图标（供 ConnectionWindow 使用）。</summary>
     public static Icon LoadAppIconShared() => LoadAppIcon();
@@ -890,7 +1136,7 @@ public sealed class MainForm : Form
         else
         {
             Hide();
-            _tray.ShowBalloonTip(2000, "DeepSeek Harness", "已最小化到托盘，dsh 服务保持运行。", ToolTipIcon.Info);
+            // 最小化到托盘保持静默，不发送系统通知。
         }
     }
 
@@ -911,6 +1157,33 @@ public sealed class MainForm : Form
         foreach (var c in _connections.Connections) { try { await c.StopAsync(); } catch { } }
         try { await _managerAgent.DisposeAsync(); } catch { }
         Application.Exit();
+    }
+
+    private string GetHostFailureMessage(Exception ex) => FormatConnectionFailure(_host, ex);
+
+    internal static string FormatConnectionFailure(IDshConnection connection, Exception ex)
+    {
+        var detail = (connection as HostSupervisor)?.LastFailureDetails;
+        var message = string.IsNullOrWhiteSpace(detail) ? ex.Message : detail;
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+            var tail = ReadLogTail(connection.LogFile, 80);
+            if (!string.IsNullOrWhiteSpace(tail)) message += "\n\n最近启动日志：\n" + tail;
+        }
+        if (!message.Contains(connection.LogFile, StringComparison.OrdinalIgnoreCase))
+            message += "\n\n完整日志：" + connection.LogFile;
+        return message;
+    }
+
+    private static string ReadLogTail(string path, int maxLines)
+    {
+        try
+        {
+            if (!File.Exists(path)) return "";
+            var lines = File.ReadAllLines(path);
+            return string.Join(Environment.NewLine, lines.TakeLast(maxLines));
+        }
+        catch { return ""; }
     }
 
     private void SafeUi(Action action)

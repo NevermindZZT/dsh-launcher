@@ -32,10 +32,13 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
     // 就绪行解析不再使用正则（历史上 \d 转义曾丢失导致端口永不匹配），
     // 改用 PumpStdout 里的 StartsWith + Uri 解析。
 
+    private const int StartupDiagnosticMaxChars = 12_000;
     private readonly object _gate = new();
+    private readonly StringBuilder _startupDiagnostics = new();
     private Process? _process;
     private IntPtr _job = IntPtr.Zero;
     private bool _disposed;
+    private string? _lastFailureDetails;
 
     public event Action<HostState>? StateChanged;
     public event Action<string>? LogLine;
@@ -46,6 +49,12 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
     public string? CurrentUrl { get; private set; }
     public bool IsAttached { get; private set; }
     public string LogFile { get; }
+
+    /// <summary>最近一次 dsh 启动/异常退出的详细诊断（包含 stdout/stderr 尾部）。</summary>
+    public string? LastFailureDetails
+    {
+        get { lock (_gate) return _lastFailureDetails; }
+    }
 
     public HostSupervisor()
     {
@@ -79,6 +88,7 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
             if (State is HostState.Starting or HostState.Running or HostState.Stopping)
                 return CurrentUrl ?? throw new InvalidOperationException("宿主已在运行");
         }
+        ResetStartupDiagnostics();
 
         var attached = await TryAttachExistingAsync(ct);
         if (attached != null)
@@ -192,9 +202,10 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         var (nodeExe, binJs) = ResolveDshPaths();
         if (nodeExe == null || binJs == null)
         {
+            var message = "未找到 dsh 安装。\n请先安装 Node.js，然后执行：npm install -g @deepseek-ai/dsh";
+            SetFailureDetails(message);
             SetState(HostState.Failed);
-            throw new InvalidOperationException(
-                "未找到 dsh 安装。\n请先安装 Node.js，然后执行：npm install -g @deepseek-ai/dsh");
+            throw new InvalidOperationException(message);
         }
 
         SetState(HostState.Starting);
@@ -220,11 +231,23 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         psi.ArgumentList.Add("0");
         psi.ArgumentList.Add("--no-open");
 
-        _process = Process.Start(psi);
+        try
+        {
+            _process = Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            var message = $"无法启动 dsh 进程：{ex.Message}";
+            SetFailureDetails(message);
+            SetState(HostState.Failed);
+            throw new InvalidOperationException(message, ex);
+        }
         if (_process == null)
         {
+            const string message = "无法启动 dsh 进程";
+            SetFailureDetails(message);
             SetState(HostState.Failed);
-            throw new InvalidOperationException("无法启动 dsh 进程");
+            throw new InvalidOperationException(message);
         }
         Log($"PID = {_process.Id}");
 
@@ -250,25 +273,13 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         }
 
         var readyTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var process = _process;
+        Task stdoutPump = Task.Run(() => PumpStdout(process, readyTcs), CancellationToken.None);
+        Task stderrPump = Task.Run(() => PumpStderr(process), CancellationToken.None);
 
-        _process.EnableRaisingEvents = true;
-        _process.Exited += (_, _) =>
-        {
-            lock (_gate)
-            {
-                if (State is HostState.Starting or HostState.Running)
-                {
-                    var code = _process?.ExitCode;
-                    SetState(HostState.Failed);
-                    Log($"宿主进程异常退出 (code={code})");
-                    UnexpectedExit?.Invoke($"宿主进程异常退出 (code={code})");
-                }
-            }
-            readyTcs.TrySetException(new IOException($"宿主进程在就绪前退出 (code={_process?.ExitCode})"));
-        };
-
-        _ = Task.Run(() => PumpStdout(_process, readyTcs), CancellationToken.None);
-        _ = Task.Run(() => PumpStderr(_process), CancellationToken.None);
+        // 先启动输出管道，再注册退出事件，确保 dsh 的最后几行 stderr 能够进入失败提示。
+        process.Exited += (_, _) => _ = CompleteProcessExitAsync(process, readyTcs, stdoutPump, stderrPump);
+        process.EnableRaisingEvents = true;
 
         var timeout = Task.Delay(ReadyTimeout, ct);
         var done = await Task.WhenAny(readyTcs.Task, timeout);
@@ -276,7 +287,9 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         {
             _ = StopAsync();
             SetState(HostState.Failed);
-            throw new TimeoutException($"dsh 在 {ReadyTimeout.TotalSeconds}s 内未就绪");
+            var message = BuildFailureDetails($"dsh 在 {ReadyTimeout.TotalSeconds}s 内未就绪");
+            SetFailureDetails(message);
+            throw new TimeoutException(message);
         }
 
         var url = await readyTcs.Task; // 失败会在此抛出
@@ -285,6 +298,86 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
         Log($"就绪: {RedactSensitiveUrl(url)}");
         Ready?.Invoke(url);
         return url;
+    }
+
+    private async Task CompleteProcessExitAsync(
+        Process process,
+        TaskCompletionSource<string> ready,
+        Task stdoutPump,
+        Task stderrPump)
+    {
+        try
+        {
+            await Task.WhenAll(stdoutPump, stderrPump).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            CaptureStartupLine("[launcher] 读取 dsh 输出失败: " + ex.Message);
+        }
+
+        int? exitCode = null;
+        try { exitCode = process.ExitCode; } catch { }
+        var unexpected = false;
+        lock (_gate)
+        {
+            unexpected = State is HostState.Starting or HostState.Running;
+            if (unexpected) SetState(HostState.Failed);
+        }
+        // 正常 StopAsync 会先把状态切到 Stopping；不要把主动停止记录成异常退出。
+        if (!unexpected && ready.Task.IsCompleted) return;
+
+        var message = BuildFailureDetails("dsh 进程异常退出", exitCode);
+        SetFailureDetails(message);
+        Log(message);
+        if (unexpected)
+        {
+            try { UnexpectedExit?.Invoke(message); } catch { }
+        }
+        if (!ready.Task.IsCompleted)
+            ready.TrySetException(new InvalidOperationException(message));
+    }
+
+    private void ResetStartupDiagnostics()
+    {
+        lock (_gate)
+        {
+            _startupDiagnostics.Clear();
+            _lastFailureDetails = null;
+        }
+    }
+
+    private void SetFailureDetails(string message)
+    {
+        lock (_gate) _lastFailureDetails = message;
+    }
+
+    private void CaptureStartupLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return;
+        lock (_gate)
+        {
+            _startupDiagnostics.AppendLine(line);
+            if (_startupDiagnostics.Length > StartupDiagnosticMaxChars)
+            {
+                var text = _startupDiagnostics.ToString();
+                _startupDiagnostics.Clear();
+                _startupDiagnostics.Append("…（前面的启动输出已省略）…\n");
+                _startupDiagnostics.Append(text[^Math.Min(text.Length, StartupDiagnosticMaxChars - 32)..]);
+            }
+        }
+    }
+
+    private string BuildFailureDetails(string reason, int? exitCode = null)
+    {
+        string output;
+        lock (_gate) output = _startupDiagnostics.ToString().Trim();
+        var message = reason + (exitCode.HasValue ? $"（exit code {exitCode.Value}）" : "");
+        if (output.Length > 0)
+            message += "\n\ndsh 启动输出：\n" + output;
+        else
+            message += "\n\n未收到 dsh 输出，请打开「日志」查看完整记录。";
+        message += "\n\n完整日志：" + LogFile;
+        return message;
     }
 
     private async Task PumpStdout(Process p, TaskCompletionSource<string> ready)
@@ -297,7 +390,9 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
                 var line = await reader.ReadLineAsync();
                 if (line == null) break; // EOF
                 line = line.TrimEnd('\r');
-                Log("[out] " + RedactSensitiveUrl(line));
+                var safeLine = RedactSensitiveUrl(line);
+                CaptureStartupLine("[out] " + safeLine);
+                Log("[out] " + safeLine);
                 // 就绪行解析：前缀匹配 + URL 解析（不依赖正则转义，更鲁棒）
                 if (!ready.Task.IsCompleted && line.StartsWith(ReadinessPrefix, StringComparison.Ordinal))
                 {
@@ -311,12 +406,11 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
                     }
                 }
             }
-            if (!ready.Task.IsCompleted)
-                ready.TrySetException(new IOException("宿主进程未输出就绪行即退出"));
         }
         catch (Exception ex)
         {
-            if (!ready.Task.IsCompleted) ready.TrySetException(ex);
+            CaptureStartupLine("[launcher] stdout 读取失败: " + ex.Message);
+            Log("[launcher] stdout 读取失败: " + ex.Message);
         }
     }
 
@@ -329,12 +423,14 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
             {
                 var line = await reader.ReadLineAsync();
                 if (line == null) break;
+                CaptureStartupLine("[err] " + line);
                 Log("[err] " + line);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // 日志通道失败不致命
+            CaptureStartupLine("[launcher] stderr 读取失败: " + ex.Message);
+            Log("[launcher] stderr 读取失败: " + ex.Message);
         }
     }
 

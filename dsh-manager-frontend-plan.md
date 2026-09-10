@@ -49,5 +49,6 @@
 - 计划已保存到本文件。
 - 已完成阶段一至三的首个实现闭环：管理员 API 客户端、DPAPI 保护的 manager session、原生 Manager Web Modal、Agent/实例列表、生命周期命令、独立 manager 远程 dsh WebView2 窗口、Cookie/profile 隔离。
 - 已完成 README 使用说明和快捷键入口。
-- 待完成：手工联调 manager/Cloudflare Tunnel、补充 smoke/check、版本号单独提交、推送 v0.4.0 tag、等待 GitHub Actions Release 并验证下载/更新检查。
+- 已完成本地 build、test、WebModal/WebShell JavaScript syntax check、single-file publish，以及 dsh-manager Go API compatibility tests。
+- 已完成版本号单独提交、master 与 v0.4.0 tag 推送、GitHub Actions Release 和 DshLauncher.exe 下载资产验证。
 - Agent 权限请求/询问浮窗保持后续阶段，当前不实施。

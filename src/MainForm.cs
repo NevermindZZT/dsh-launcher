@@ -232,15 +232,10 @@ public sealed class MainForm : Form
     /// <summary>Ctrl+Shift+C：弹出连接选择器，列出可连接的服务器，选择后连接/打开窗口。</summary>
     public void ShowConnectionPicker()
     {
-        // 打开前同步最新连接配置（设置中添加的服务器立即生效）
+        // 打开前同步最新连接配置（设置中添加的服务器立即生效）。
+        // 即使当前没有 SSH 连接也必须打开空列表弹窗，否则用户无法进入「新增 SSH」。
         _connections.SyncFrom(_settings);
-        if (_connections.Connections.Count <= 1)
-        {
-            _tray.ShowBalloonTip(3000, "DeepSeek Harness",
-                "未配置 SSH 连接。请在设置 → SSH 连接中添加服务器。", ToolTipIcon.Info);
-            return;
-        }
-        ShowWebModal("ssh");
+        ShowMainModal("ssh", new { page = "ssh", ssh = _settings.SshConnections });
     }
 
     /// <summary>连接本地（供选择器/托盘调用）。</summary>

@@ -2,11 +2,11 @@
 
 > **Manager transport migration:** dsh-manager now uses one plain HTTP upstream port and does not use private certificates or TLS fingerprints. Use `http://` only on trusted private networks; for public access configure HTTPS/WSS at an external reverse proxy. DSH 0.1.2-rc.1 startup URLs carry a one-time token; DshLauncher keeps it in memory for initial navigation and redacts it from launcher logs.
 
-![Version](https://img.shields.io/badge/version-v0.4.1-blue)
+![Version](https://img.shields.io/badge/version-v0.4.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)
-![Size](https://img.shields.io/badge/single%20exe-1.4MB-lightgrey)
+![Size](https://img.shields.io/badge/single%20exe-2.02MB-lightgrey)
 
 **DeepSeek Harness（dsh）桌面启动器**：双击即用，打开 dsh Web UI；支持 SSH 远程连接多台服务器、一键同步本地配置与插件。
 
@@ -23,7 +23,7 @@
 ## 特性
 
 - **一键启动**：双击即打开 dsh Web UI（自动连接已有实例或后台启动新服务）
-- **单文件交付**：单个 exe 约 1.4 MB，绿色免安装，不捆绑 Node / Electron / dsh 内核
+- **单文件交付**：单个 exe 约 2.02 MB，绿色免安装，不捆绑 Node / Electron / dsh 内核
 - **托盘常驻**：关闭窗口隐藏到托盘、服务保持运行；重启 / 日志 / 插件 / 设置 / 更新 dsh 全在托盘
 - **插件管理**：可视化安装 / 卸载 / 更新插件，无需终端；支持导出带实际版本的 JSON 清单，并在其他实例按版本导入安装
 - **启动诊断**：dsh 启动失败时显示进程退出码以及 stdout / stderr 诊断输出
@@ -42,7 +42,7 @@
 
 | 方案 | 技术栈 | 体积 | SSH 远程 | 说明 |
 |---|---|---|---|---|
-| **DshLauncher（本方案）** | C# WinForms + WebView2 | **约 1.4 MB 单文件** | ✅ 系统 SSH，多服务器多窗口 | 轻量、免终端、配置/插件同步 |
+| **DshLauncher（本方案）** | C# WinForms + WebView2 | **约 2.02 MB 单文件** | ✅ 系统 SSH，多服务器多窗口 | 轻量、免终端、配置/插件同步 |
 | [deepseek-harness-desktop](https://github.com/anywhere-labs/deepseek-harness-desktop) | 桌面 Web 容器 | 较大 | ❓ | DSH 生态桌面端，功能更重 |
 | 官方流程（`dsh web` + 浏览器） | CLI + 浏览器 | 0 | ❌ | 基础用法，依赖终端，无管理能力 |
 | VS Code Remote-SSH（模式参考） | 桌面 + SSH | 大 | ✅ | 本地 UI + 远程环境（dsh 无此方案，DshLauncher 提供类似体验） |

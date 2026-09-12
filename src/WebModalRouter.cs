@@ -158,8 +158,8 @@ internal static class WebModalRouter
         '<div class="form-row"><label>'+t('关闭时退出','Close exits')+'</label><input id="ce" type="checkbox" '+(m.closeExits?'checked':'')+'></div>'+
         '<div class="form-row"><label>'+t('自动启动','Auto-start')+'</label><input id="as" type="checkbox" '+(m.autoStart?'checked':'')+'></div></fieldset>'+
         '<fieldset><legend>'+t('Agent 交互','Agent interactions')+'</legend>'+
-        '<div class="form-row"><label>'+t('由 Launcher 处理问题并通知','Let Launcher handle questions and notify')+'</label><input id="aq" type="checkbox" '+(m.handleAgentQuestions!==false?'checked':'')+'></div>'+
-        '<div class="manager-muted">'+t('关闭后不拦截 Agent 问题，改由 dsh 原生 Web UI 询问。','When disabled, dsh handles Agent questions in its native Web UI.')+'</div></fieldset>'+
+        '<div class="form-row"><label>'+t('同时显示 Launcher 的提问和权限浮窗','Also show Launcher question and approval pop-ups')+'</label><input id="aq" type="checkbox" '+(m.handleAgentQuestions!==false?'checked':'')+'></div>'+
+        '<div class="manager-muted">'+t('dsh 原生 Web UI 始终显示；关闭后仅关闭 Launcher 浮窗和通知。','dsh native Web UI always remains available; disabling only hides Launcher pop-ups and notifications.')+'</div></fieldset>'+
         '<fieldset><legend>'+t('链接打开方式','Link opening')+'</legend>'+
         '<div class="form-row"><label>'+t('链接使用 WebView2','Open links in WebView2')+'</label><input id="lw" type="checkbox" '+(m.openLinksInWebView?'checked':'')+'></div></fieldset>'+
         '<div class="actions"><button class="primary" id="save">'+t('保存设置','Save')+'</button></div>';

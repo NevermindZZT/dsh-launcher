@@ -1356,7 +1356,8 @@ public sealed class MainForm : Form
         var sourceKey = ConnectionManager.IdOf(connection);
         if (browser.Type == "cancel") { _interactions.CancelExternal(sourceKey, browser.EventId); return true; }
         if (browser.Kind == null) return true;
-        if (browser.Kind == DshInteractionKind.Question && !_settings.HandleAgentQuestions) return false;
+        // The browser bridge only observes the native dsh event stream. Never suppress dsh's own UI; when enabled, the Launcher overlay is an additional answer surface for both questions and approvals.
+        if (!_settings.HandleAgentQuestions) return true;
         var interaction = new DshPendingInteraction(sourceKey, connection.DisplayName, browser.EventId, browser.ClientId, browser.AgentId, browser.Kind.Value, browser.ToolName, browser.Reason, browser.Questions, new BrowserDshInteractionResponder(reply));
         _interactions.PublishExternal(interaction);
         return true;
@@ -1369,6 +1370,12 @@ public sealed class MainForm : Form
         var script = WebShell.BrowserInteractionConfigScript(_settings.HandleAgentQuestions);
         if (_web.CoreWebView2 != null) _ = _web.CoreWebView2.ExecuteScriptAsync(script);
         foreach (var window in _remoteWindows.Where(window => !window.IsDisposed)) window.ApplyAgentQuestionHandling(_settings.HandleAgentQuestions);
+        // Turning the optional surface off must not answer the dsh event. The native Web UI remains open and will emit the normal cancel frame after the user resolves it.
+        if (!_settings.HandleAgentQuestions && _interactionOverlay is { IsDisposed: false } overlay)
+        {
+            _interactionOverlay = null;
+            overlay.DismissCancelled();
+        }
     }
 
     private async Task ReplyMainBrowserInteractionAsync(string eventId, string clientId, DshInteractionDecision decision)
@@ -1387,7 +1394,7 @@ public sealed class MainForm : Form
 
     private void ShowInteractionOverlay(DshPendingInteraction interaction)
     {
-        if (_quitting) return;
+        if (_quitting || !_settings.HandleAgentQuestions) return;
         if (_interactionOverlay is { IsDisposed: false }) return;
 
         var overlay = new DshInteractionWebOverlayForm(interaction);

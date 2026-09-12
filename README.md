@@ -33,7 +33,7 @@
 - **配置与插件同步**：本地 dsh 配置（`settings.yaml` 等）与已装插件一键同步到服务器，不用逐个重装
 - **dsh-manager Agent**：可注册到自托管 Go manager，统一上报本地与 SSH 实例状态，并接受远程启动 / 停止 / 重启 / 同步 / 更新命令
 - **原生 dsh-manager 前端**：在 Launcher 内登录 manager，查看 Agent / dsh 实例、执行生命周期命令，并用独立 WebView2 窗口打开 manager 代理的远程 dsh；不依赖 Dashboard，不共享本地或 SSH 会话 Cookie
-- **审批与问答交互（预览）**：浏览器内 `ask_user_question` 可由独立置顶 WebView2 窗口直接回答；Manager 汇聚审批仍可使用 TopMost 原生浮窗。当前 dsh 的直连观察通道默认关闭，以避免与完整 Web UI 的会话写入器冲突
+- **审批与问答交互（预览）**：dsh 原生 Web UI 始终正常显示提问与权限请求；可选独立置顶 WebView2 浮窗会同步显示并直接处理，任一侧处理后另一侧自动关闭。Manager 汇聚审批仍可使用 TopMost 原生浮窗。当前 dsh 的直连观察通道默认关闭，以避免与完整 Web UI 的会话写入器冲突
 - **dsh 直连插件**：不使用 launcher 时，可在 dsh 内安装 [dsh-manager-plugin](https://github.com/NevermindZZT/dsh-manager-plugin)，直接建立 manager 反向连接
 - **Agent 通道**：manager 使用单一 HTTP/WS 端口；公网 HTTPS/WSS 由外部反向代理终止，Agent Token 使用 Windows DPAPI 保护
 - **快捷键**：`Ctrl+Shift+R/L/P/S/M/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / Manager / 退出 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
@@ -113,11 +113,12 @@ Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文�
 
 #### 审批与问答交互
 
-浏览器内的 `ask_user_question` 会由 Launcher 截获，并在独立的置顶 WebView2 窗口中展示单选/多选、选项说明和自定义回答。该窗口不依附 dsh 主界面，因此即使 Launcher 最小化或位于后台也可直接回答；答案使用原事件的 `clientId` / `eventId` 回传。
+浏览器内的 `ask_user_question` 和权限请求会继续在 dsh 原生 Web UI 中正常显示；开启 Launcher 浮窗后，同一个事件还会在独立的置顶 WebView2 窗口中展示。该窗口不依附 dsh 主界面，因此即使 Launcher 最小化或位于后台也可直接回答；任一侧的回答、允许、拒绝或取消都会由 dsh 事件取消帧同步关闭另一侧；答案使用原事件的 `clientId` / `eventId` 回传。
 
 - 独立窗口完全使用 HTML/CSS/JS 渲染，固定在当前屏幕右下角，提交失败会保留已填写内容并展示错误。
-- 「设置 → Agent 交互 → 由 Launcher 处理问题并通知」默认开启；关闭后 Launcher 不拦截 Agent 问题、不显示通知，直接回退到 dsh 原生 Web UI。
-- 权限请求和 Manager 汇聚事件仍使用 TopMost 原生浮窗；关闭窗口、连接中断和事件撤销均不会自动允许。
+- 「设置 → Agent 交互 → 同时显示 Launcher 的提问和权限浮窗」默认开启；关闭后只关闭 Launcher 浮窗和通知，dsh 原生 Web UI 仍会正常显示并处理交互。
+- 问题和权限请求都可在 dsh 或 Launcher 浮窗任一处处理；关闭窗口、连接中断和事件撤销均不会自动允许。Manager 汇聚事件仍使用 TopMost 原生浮窗。
+
 - 已登录的原生 Manager 前端可订阅 manager 的管理员事件流并接管在线 Agent/Instance 的请求。
 - Manager 中继需双方声明 `remote.events-v1`。旧版 Manager 或 Agent 未协商该能力时，Launcher 安全回退为本机浮窗，不发送未知协议。
 - Manager 仅使用不透明的 manager request ID 路由事件；dsh 内部 `eventId` / `clientId` 不会发送给管理员前端。

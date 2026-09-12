@@ -15,7 +15,7 @@ public sealed class AppSettings
     public bool AutoStart { get; set; }
     /// <summary>true = external links open in a new WebView2 window; false = system browser (default).</summary>
     public bool OpenLinksInWebView { get; set; }
-    /// <summary>true = Launcher intercepts Agent questions and shows its browser-rendered modal (default).</summary>
+    /// <summary>true = Launcher also shows a standalone overlay for Agent questions and approvals; dsh's native Web UI always remains available (default).</summary>
     public bool HandleAgentQuestions { get; set; } = true;
 
     /// <summary>SSH 连接配置列表（多主机；本地连接始终存在，SSH 按 AutoConnect 并行连接）。</summary>

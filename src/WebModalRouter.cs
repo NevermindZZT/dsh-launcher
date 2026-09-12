@@ -252,7 +252,7 @@ internal static class WebModalRouter
       var row=el.closest('.plugin-row');
       if(el.id==='x'||el.id==='cancel'||el.id==='ssh-cancel'||el.classList.contains('backdrop'))close();
       else if(el.dataset.folderPath)send('folder.list',{path:el.dataset.folderPath});
-      else if(el.id==='manager-login')send('manager.login',{serverUrl:val('manager-url'),username:val('manager-username'),password:val('manager-password')});
+      else if(el.id==='manager-login'){if(el.disabled)return;el.disabled=true;el.textContent=t('登录中…','Signing in…');send('manager.login',{serverUrl:val('manager-url'),username:val('manager-username'),password:val('manager-password')});}
       else if(el.id==='manager-refresh')send('manager.refresh');
       else if(el.id==='manager-logout')send('manager.logout');
       else if(el.closest('[data-manager-action]')){var b=el.closest('[data-manager-action]');send('manager.command',{agentId:b.dataset.agent,instanceId:b.dataset.instance,action:b.dataset.managerAction});}

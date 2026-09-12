@@ -231,7 +231,8 @@ public sealed class ConnectionWindow : Form
             }
             if (WebModalRouter.TryHandle(raw, (action, payload) =>
             {
-                if (action == "settings.save") { return; }
+                // SSH 窗口共享本机 Launcher 的设置；不允许在远端 WebView 中产生一份空白或脱节的设置副本。
+                if (action == "settings.save") { _main.ShowSettingsFromChild(); return; }
                 if (action == "ssh.form")
                 {
                     if (_main != null)
@@ -279,9 +280,10 @@ public sealed class ConnectionWindow : Form
                         _main.OpenSshConnection(n.GetString()!);
                     return;
                 }
-                 if (action == "logs.open") { WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return; }
-                 if (action == "plugins.open") { WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); return; }
-                 if (action == "launcher.checkUpdate") { _ = ShowAboutAsync(checkUpdates: true); return; }
+                if (action == "logs.open") { OpenRemoteLogs(); return; }
+                if (action == "plugins.open") { WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); return; }
+                if (action == "manager.open") { _ = _main.ShowManagerFromChildAsync(); return; }
+                if (action == "launcher.checkUpdate") { _ = ShowAboutAsync(checkUpdates: true); return; }
                  if (action == "dsh.update") { _ = UpdateDshFromAboutAsync(); return; }
                 if (action == "folder.parent") { _ = ParentFolderAsync(payload); return; }
                 if (action == "folder.select") { _ = SelectFolderAsync(payload); return; }
@@ -292,11 +294,14 @@ public sealed class ConnectionWindow : Form
             {
                 switch (action)
                 {
-                    case "settings": WebModalRouter.Open(_web, "settings"); break;
-                    case "logs": WebModalRouter.Open(_web, "logs"); break;
+                    // 设置和 Manager 是 Launcher 全局功能，统一由本地主窗口展示和执行。
+                    case "settings": _main.ShowSettingsFromChild(); break;
+                    case "manager": _ = _main.ShowManagerFromChildAsync(); break;
+                    // 日志是 SSH 会话专属功能，仍在当前窗口显示对应连接的日志。
+                    case "logs": OpenRemoteLogs(); break;
                     case "plugins": WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); break;
                     case "ssh":
-                        if (_main != null) WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
+                        WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
                         break;
                     case "restart": _ = RestartAsync(); break;
                     case "about": _ = ShowAboutAsync(); break;
@@ -562,7 +567,7 @@ public sealed class ConnectionWindow : Form
         switch (keyData)
         {
             case Keys.Control | Keys.Shift | Keys.R: _ = RestartAsync(); return true;
-            case Keys.Control | Keys.Shift | Keys.L: WebModalRouter.Open(_web, "logs", new { page="logs", history=ReadHistory() }); return true;
+            case Keys.Control | Keys.Shift | Keys.L: OpenRemoteLogs(); return true;
             case Keys.Control | Keys.Shift | Keys.P: WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); return true;
             case Keys.Control | Keys.Shift | Keys.C: OpenPicker(); return true;
             case Keys.Control | Keys.Shift | Keys.Y: _ = SyncFromLocalAsync(); return true;
@@ -670,7 +675,15 @@ public sealed class ConnectionWindow : Form
         catch (Exception ex) { HideLoading(); MessageBox.Show(this, ex.Message, "重启失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 
-    private string ReadHistory() { try { return File.Exists(_conn.LogFile) ? File.ReadAllText(_conn.LogFile) : ""; } catch { return ""; } }
+    private void OpenRemoteLogs() =>
+        WebModalRouter.Open(_web, "logs", new { page = "logs", history = ReadHistory() });
+
+    private string ReadHistory()
+    {
+        try { return File.Exists(_conn.LogFile) ? File.ReadAllText(_conn.LogFile) : ""; }
+        catch (Exception ex) { Diag.Log($"读取 SSH 日志失败: {ex.Message}"); return ""; }
+    }
+
     private Task ListFolderAsync(JsonElement p) => OpenFolderAsync(GetFolderPath(p));
 
     private Task ParentFolderAsync(JsonElement p) => OpenFolderAsync(ParentFolderPath(GetFolderPath(p)));

@@ -33,6 +33,8 @@ public sealed class MainForm : Form
     private readonly List<ConnectionWindow> _remoteWindows = new();
     private readonly List<ManagerConnectionWindow> _managerWindows = new();
     private int _managerRequestId;
+    // 登录请求是单飞操作；WebView 中的双击或重复事件不得创建多次登录/弹窗刷新。
+    private int _managerLoginInProgress;
     private readonly List<LinkWindow> _linkWindows = new();
     private const string ShowEventName = "Local\\DshLauncher_ShowWindow";
     private EventWaitHandle? _showEvent;
@@ -1051,9 +1053,14 @@ public sealed class MainForm : Form
 
     private async Task LoginManagerAsync(JsonElement payload)
     {
+        // Browser click events can be delivered more than once before the modal re-renders.
+        // Keep exactly one request active so a failed login cannot reopen the panel repeatedly.
+        if (Interlocked.Exchange(ref _managerLoginInProgress, 1) != 0) return;
+
         var serverUrl = GetPayloadString(payload, "serverUrl");
         var username = GetPayloadString(payload, "username");
         var password = GetPayloadString(payload, "password");
+        Interlocked.Increment(ref _managerRequestId); // discard an older dashboard load while signing in
         try
         {
             await _managerFrontend.LoginAsync(serverUrl, username, password);
@@ -1062,8 +1069,26 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            await ShowManagerAsync(error: ex.Message);
+            // Do not call ShowManagerAsync here: it first opens a loading modal and makes
+            // another auth request, which made one failed login look like repeated popups.
+            ShowManagerLoginError(serverUrl, username, ex.Message);
         }
+        finally
+        {
+            Volatile.Write(ref _managerLoginInProgress, 0);
+        }
+    }
+
+    private void ShowManagerLoginError(string serverUrl, string username, string error)
+    {
+        var snapshot = new ManagerDashboardSnapshot
+        {
+            ServerUrl = string.IsNullOrWhiteSpace(_managerFrontend.CurrentServerUrl) ? serverUrl : _managerFrontend.CurrentServerUrl,
+            Authenticated = false,
+            Username = username,
+            Error = error,
+        };
+        ShowMainModal("manager", BuildManagerModalData(snapshot));
     }
 
     private void EnsureManagerInteractionStream()
@@ -1134,6 +1159,9 @@ public sealed class MainForm : Form
     }
 
     internal Task ShowManagerFromChildAsync() => ShowManagerAsync();
+
+    /// <summary>供 SSH/manager 子窗口打开唯一的本机 Launcher 设置页。</summary>
+    internal void ShowSettingsFromChild() => ShowMainModal("settings");
 
     internal void ShowAboutFromChild() => _ = ShowAboutAsync();
 

@@ -98,24 +98,25 @@
 
 Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文写入 launcher 设置文件。
 
-#### 原生 Manager 前端
+#### 使用 Launcher 作为 dsh-manager 前端
 
-点击标题栏「Manager」、托盘菜单「dsh-manager」或按 `Ctrl+Shift+M`，可在 Launcher 内直接登录 manager。原生面板支持：
+DshLauncher 可直接作为 dsh-manager 的轻量前端使用，无需另行打开或嵌入 Manager Dashboard。点击标题栏「Manager」、托盘菜单「dsh-manager」或按 `Ctrl+Shift+M`，输入 manager 地址、用户名和密码即可登录。
 
-- 查看 Agent 在线状态、平台和版本；
-- 查看每个 Agent 的 dsh 实例状态、版本和错误；
-- 下发启动、停止、重启、同步和更新命令；
+登录后可：
+
+- 查看 Agent 在线状态、平台与版本，以及每个 dsh 实例的运行状态、版本和错误；
+- 对指定实例下发启动、停止、重启、同步与更新命令；
 - 点击「打开 dsh」在独立 WebView2 窗口中打开 manager 返回的 `/dsh/<session>/` 代理地址；
-- manager 登录会话使用 HttpOnly `dsh-session` Cookie，Launcher 只将 DPAPI 保护后的会话材料保存到本机；
-- 每个 manager 实例使用独立 WebView2 user-data profile，避免与本地 dsh、SSH dsh 或其它 manager 实例串 Cookie。
+- 处理 manager 汇聚的 Agent 交互事件。
 
-原生面板不嵌入 manager Dashboard，也不抓取 Dashboard DOM。公网部署仍必须使用 HTTPS/WSS 反向代理；manager 的 `http://` 只适合可信内网。
+manager 登录会话使用 HttpOnly `dsh-session` Cookie，Launcher 只将 DPAPI 保护后的会话材料保存到本机；每个 manager 实例使用独立 WebView2 user-data profile，不会与本地 dsh、SSH dsh 或其他 manager 实例串 Cookie。公网部署仍必须使用 HTTPS/WSS 反向代理；manager 的 `http://` 只适合可信内网。
 
 #### 审批与问答交互
 
-浏览器内的 `ask_user_question` 和权限请求会继续在 dsh 原生 Web UI 中正常显示；开启 Launcher 浮窗后，同一个事件还会在独立的置顶 WebView2 窗口中展示。该窗口不依附 dsh 主界面，因此即使 Launcher 最小化或位于后台也可直接回答；任一侧的回答、允许、拒绝或取消都会由 dsh 事件取消帧同步关闭另一侧；答案使用原事件的 `clientId` / `eventId` 回传。
+浏览器内的 `ask_user_question` 和权限请求会继续在 dsh 原生 Web UI 中正常显示；开启 Launcher 浮窗后，同一个事件还会在独立的置顶 WebView2 窗口中展示。该窗口不依附 dsh 主界面，因此即使 Launcher 最小化或位于后台也可直接回答。
 
-- 独立窗口完全使用 HTML/CSS/JS 渲染，固定在当前屏幕右下角，提交失败会保留已填写内容并展示错误。
+- 浮窗标题栏会显示交互类型和来源，例如「Agent 正在等待回答 · 本地」；内容区专注于问题、选项和操作按钮。窗口会按当前显示器与选项数量扩大，常规四选项问题通常无需滚动即可完成操作。
+- dsh Web UI 与 Launcher 浮窗是并行交互入口：在任一侧回答、允许、拒绝或取消，另一侧会同步关闭。答案使用同一事件的 `clientId` / `eventId` 回传。
 - 「设置 → Agent 交互 → 同时显示 Launcher 的提问和权限浮窗」默认开启；关闭后只关闭 Launcher 浮窗和通知，dsh 原生 Web UI 仍会正常显示并处理交互。
 - 问题和权限请求都可在 dsh 或 Launcher 浮窗任一处处理；关闭窗口、连接中断和事件撤销均不会自动允许。Manager 汇聚事件仍使用 TopMost 原生浮窗。
 

@@ -97,7 +97,7 @@ public sealed class ConnectionWindow : Form
     private async Task ShowAboutAsync(bool checkUpdates = false)
     {
         var requestId = Interlocked.Increment(ref _aboutRequestId);
-        WebModalRouter.Open(_web, "about", MainForm.BuildAboutData("loading", null, null, null, checkUpdates, true));
+        _main.ShowAboutFromChild();
 
         string? dshVersion = null;
         LauncherUpdater.UpdateCheckResult? launcherUpdate = null;
@@ -129,7 +129,7 @@ public sealed class ConnectionWindow : Form
         }
 
         if (IsDisposed || _quitting || requestId != Volatile.Read(ref _aboutRequestId)) return;
-        WebModalRouter.Open(_web, "about", MainForm.BuildAboutData(dshVersion == null ? "missing" : "ready", dshVersion, launcherUpdate, dshUpdate, false, true));
+        _main.ShowAboutFromChild();
     }
 
 
@@ -281,7 +281,7 @@ public sealed class ConnectionWindow : Form
                     return;
                 }
                 if (action == "logs.open") { OpenRemoteLogs(); return; }
-                if (action == "plugins.open") { WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); return; }
+                if (action == "plugins.open") { _main.ShowPluginsFromChild(); return; }
                 if (action == "manager.open") { _ = _main.ShowManagerFromChildAsync(); return; }
                 if (action == "launcher.checkUpdate") { _ = ShowAboutAsync(checkUpdates: true); return; }
                  if (action == "dsh.update") { _ = UpdateDshFromAboutAsync(); return; }
@@ -299,7 +299,7 @@ public sealed class ConnectionWindow : Form
                     case "manager": _ = _main.ShowManagerFromChildAsync(); break;
                     // 日志是 SSH 会话专属功能，仍在当前窗口显示对应连接的日志。
                     case "logs": OpenRemoteLogs(); break;
-                    case "plugins": WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); break;
+                    case "plugins": _main.ShowPluginsFromChild(); break;
                     case "ssh":
                         WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
                         break;
@@ -568,7 +568,7 @@ public sealed class ConnectionWindow : Form
         {
             case Keys.Control | Keys.Shift | Keys.R: _ = RestartAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.L: OpenRemoteLogs(); return true;
-            case Keys.Control | Keys.Shift | Keys.P: WebModalRouter.Open(_web, "plugins", new { page="plugins", plugins=Array.Empty<object>(), canManagePlugins = false }); return true;
+            case Keys.Control | Keys.Shift | Keys.P: _main.ShowPluginsFromChild(); return true;
             case Keys.Control | Keys.Shift | Keys.C: OpenPicker(); return true;
             case Keys.Control | Keys.Shift | Keys.Y: _ = SyncFromLocalAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.O: OpenRemoteFolder(); return true;
@@ -675,8 +675,7 @@ public sealed class ConnectionWindow : Form
         catch (Exception ex) { HideLoading(); MessageBox.Show(this, ex.Message, "重启失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 
-    private void OpenRemoteLogs() =>
-        WebModalRouter.Open(_web, "logs", new { page = "logs", history = ReadHistory() });
+    private void OpenRemoteLogs() => _main.ShowLogsFromChild();
 
     private string ReadHistory()
     {

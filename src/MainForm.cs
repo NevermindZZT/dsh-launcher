@@ -36,6 +36,8 @@ public sealed class MainForm : Form
     // 登录请求是单飞操作；WebView 中的双击或重复事件不得创建多次登录/弹窗刷新。
     private int _managerLoginInProgress;
     private readonly List<LinkWindow> _linkWindows = new();
+    private SettingsForm? _settingsWindow;
+    private LauncherModalWindow? _launcherModal;
     private const string ShowEventName = "Local\\DshLauncher_ShowWindow";
     private EventWaitHandle? _showEvent;
     private Thread? _showWatcher;
@@ -143,7 +145,7 @@ public sealed class MainForm : Form
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("日志  (Ctrl+Shift+L)", null, (_, _) => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() }));
         trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true }));
-        trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowMainModal("settings"));
+        trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowSettingsForm());
         trayMenu.Items.Add("dsh-manager  (Ctrl+Shift+M)", null, (_, _) => _ = ShowManagerAsync());
         _pendingInteractionsMenu = new ToolStripMenuItem("待处理确认 (0)", null, (_, _) => ShowPendingInteraction());
         _pendingInteractionsMenu.Enabled = false;
@@ -405,7 +407,7 @@ public sealed class MainForm : Form
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionConfigScript(_settings.HandleAgentQuestions));
-        await WebModalRouter.Install(_web);
+        // Launcher menus now use dedicated WebView2 windows; never inject modal UI into dsh.
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
@@ -417,80 +419,12 @@ public sealed class MainForm : Form
                 _notifications.Show(notice.Title, notice.Body, ShowMainWindow, notice.RequireInteraction);
                 return;
             }
-            if (WebModalRouter.TryHandle(raw, (action, payload) =>
-            {
-                if (action == "settings.save") { WebModalRouter.Apply(_settings, payload); ApplyAgentQuestionHandling(); _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections); _ = _managerAgent.RestartAsync(); return; }
-                if (action == "logs.open") { ShowWebModal("logs", new { page="logs", history=ReadHistory() }); return; }
-                if (action == "logs.clear") { try { File.WriteAllText(_host.LogFile, string.Empty); } catch { } ShowWebModal("logs", new { page="logs", history=string.Empty }); return; }
-                if (action == "plugins.open" || action == "plugins.list") { ShowPluginsModal(); return; }
-                if (action == "plugins.export") { ExportPlugins(); return; }
-                if (action == "plugins.import") { _ = ImportPluginsAsync(); return; }
-                if (action == "launcher.checkUpdate") { _ = ShowAboutAsync(checkUpdates: true); return; }
-                if (action == "dsh.update") { _ = UpdateDshAsync(); return; }
-                if (action == "manager.login") { _ = LoginManagerAsync(payload); return; }
-                if (action == "manager.refresh") { _ = ShowManagerAsync(); return; }
-                if (action == "manager.logout") { _ = LogoutManagerAsync(); return; }
-                if (action == "manager.command") { _ = RunManagerCommandAsync(payload); return; }
-                if (action == "manager.open") { _ = OpenManagerInstanceAsync(payload); return; }
-                if (action.StartsWith("plugins.") && payload.ValueKind == JsonValueKind.Object)
-                {
-                    var pkg = payload.TryGetProperty("package", out var q) ? q.GetString() : null;
-                    var verb = action[9..];
-                    if (verb == "install" && !string.IsNullOrWhiteSpace(pkg)) _ = _host.RunPluginAsync(new[] { "add", pkg }, x => _host.AppendLog(x));
-                    else if (verb == "remove" && !string.IsNullOrWhiteSpace(pkg)) _ = _host.RunPluginAsync(new[] { "remove", pkg }, x => _host.AppendLog(x));
-                    else if (verb == "update") _ = _host.RunPluginAsync(string.IsNullOrWhiteSpace(pkg) ? new[] { "update" } : new[] { "update", pkg }, x => _host.AppendLog(x));
-                    return;
-                }
-                if (action == "ssh.form")
-                {
-                    var name = payload.TryGetProperty("name", out var n) ? n.GetString() : null;
-                    var cfg = string.IsNullOrWhiteSpace(name)
-                        ? new SshConnectionConfig()
-                        : _settings.SshConnections.FirstOrDefault(x => x.Name == name) ?? new SshConnectionConfig();
-                    WebModalRouter.Open(_web, "ssh-edit", new { page = "ssh-edit", mode = string.IsNullOrWhiteSpace(name) ? "add" : "edit", originalName = name ?? "", config = cfg });
-                    return;
-                }
-                if (action == "ssh.save")
-                {
-                    try
-                    {
-                        var cfg = JsonSerializer.Deserialize<SshConnectionConfig>(payload.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                        var original = payload.TryGetProperty("originalName", out var oldName) ? oldName.GetString() : null;
-                        if (cfg == null || string.IsNullOrWhiteSpace(cfg.Host) || string.IsNullOrWhiteSpace(cfg.User))
-                        {
-                            MessageBox.Show(this, "请填写主机和用户名。", "SSH 配置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        }
-                        else
-                        {
-                            SaveSshConnection(cfg, original);
-                            WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _settings.SshConnections });
-                        }
-                    }
-                    catch (Exception ex) { MessageBox.Show(this, ex.Message, "SSH 配置保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
-                    return;
-                }
-                if (action == "ssh.delete")
-                {
-                    var name = payload.TryGetProperty("name", out var n) ? n.GetString() : null;
-                    if (!string.IsNullOrWhiteSpace(name))
-                    {
-                        DeleteSshConnection(name);
-                        WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _settings.SshConnections });
-                    }
-                    return;
-                }
-                if (action == "ssh.connect")
-                {
-                    var name = payload.TryGetProperty("name", out var n) ? n.GetString() : null;
-                    if (!string.IsNullOrWhiteSpace(name)) OpenSshConnection(name);
-                    return;
-                }
-            })) return;
+
             WebShellBridge.TryHandleWindowCommand(this, raw, action =>
             {
                 switch (action)
                 {
-                    case "settings": ShowWebModal("settings"); break;
+                    case "settings": ShowSettingsForm(); break;
                     case "logs": ShowLogForm(); break;
                     case "plugins": ShowPluginsForm(); break;
                     case "ssh": ShowConnectionPicker(); break;
@@ -692,7 +626,7 @@ public sealed class MainForm : Form
             case Keys.Control | Keys.Shift | Keys.R: _ = RestartHostAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.L: ShowLogForm(); return true;
             case Keys.Control | Keys.Shift | Keys.P: ShowPluginsForm(); return true;
-            case Keys.Control | Keys.Shift | Keys.S: ShowWebModal("settings"); return true;
+            case Keys.Control | Keys.Shift | Keys.S: ShowSettingsForm(); return true;
             case Keys.Control | Keys.Shift | Keys.M: _ = ShowManagerAsync(); return true;
             case Keys.Control | Keys.Shift | Keys.Q: OnQuit(); return true;
             case Keys.Control | Keys.Shift | Keys.C: ShowConnectionPicker(); return true;
@@ -718,10 +652,6 @@ public sealed class MainForm : Form
 
     /// <summary>打开（或聚焦）插件管理窗口。</summary>
     private void ShowPluginsForm() => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true });
-
-    private void ShowWebModal(string page) => WebModalRouter.Open(_web, _settings, page);
-
-    private void ShowWebModal(string page, object data) => WebModalRouter.Open(_web, page, data);
 
     /// <summary>打开关于窗口；检查按钮会并行检查 DshLauncher 与当前 dsh。</summary>
     private async Task ShowAboutAsync(bool checkUpdates = false)
@@ -1161,7 +1091,7 @@ public sealed class MainForm : Form
     internal Task ShowManagerFromChildAsync() => ShowManagerAsync();
 
     /// <summary>供 SSH/manager 子窗口打开唯一的本机 Launcher 设置页。</summary>
-    internal void ShowSettingsFromChild() => ShowMainModal("settings");
+    internal void ShowSettingsFromChild() => ShowSettingsForm();
 
     internal void ShowAboutFromChild() => _ = ShowAboutAsync();
 
@@ -1184,40 +1114,74 @@ public sealed class MainForm : Form
         SafeUi(() =>
         {
             if (IsDisposed || Disposing) return;
-            var restoreFromMinimized = WindowState == FormWindowState.Minimized;
-            Show();
-            if (restoreFromMinimized) WindowState = FormWindowState.Normal;
-            Activate();
-            BeginInvoke(new Action(() =>
+            if (_launcherModal is not { IsDisposed: false })
             {
-                if (!IsDisposed && IsHandleCreated)
-                {
-                    if (data == null) WebModalRouter.Open(_web, _settings, page);
-                    else WebModalRouter.Open(_web, page, data);
-                }
-            }));
+                _launcherModal = new LauncherModalWindow(_settings);
+                _launcherModal.BrowserMessage += HandleStandaloneModalMessage;
+                _launcherModal.FormClosed += (_, _) => _launcherModal = null;
+                _launcherModal.Open(page, data);
+                _launcherModal.Show(this);
+            }
+            else _launcherModal.Open(page, data);
+            _launcherModal.Show();
+            _launcherModal.Activate();
+        });
+    }
+
+    private void HandleStandaloneModalMessage(string raw)
+    {
+        WebModalRouter.TryHandle(raw, (action, payload) =>
+        {
+            if (action == "logs.clear") { try { File.WriteAllText(_host.LogFile, string.Empty); } catch { } ShowMainModal("logs", new { page = "logs", history = string.Empty }); }
+            else if (action == "plugins.open" || action == "plugins.list") ShowPluginsModal();
+            else if (action == "plugins.export") ExportPlugins();
+            else if (action == "plugins.import") _ = ImportPluginsAsync();
+            else if (action == "launcher.checkUpdate") _ = ShowAboutAsync(true);
+            else if (action == "dsh.update") _ = UpdateDshAsync();
+            else if (action == "manager.login") _ = LoginManagerAsync(payload);
+            else if (action == "manager.refresh") _ = ShowManagerAsync();
+            else if (action == "manager.logout") _ = LogoutManagerAsync();
+            else if (action == "manager.command") _ = RunManagerCommandAsync(payload);
+            else if (action == "manager.open") _ = OpenManagerInstanceAsync(payload);
+            else if (action == "ssh.form") ShowMainModal("ssh-edit", new { page = "ssh-edit", mode = "add", originalName = "", config = new SshConnectionConfig() });
+            else if (action == "ssh.connect" && payload.TryGetProperty("name", out var connect)) OpenSshConnection(connect.GetString() ?? "");
+            else if (action == "ssh.delete" && payload.TryGetProperty("name", out var remove)) { DeleteSshConnection(remove.GetString() ?? ""); ShowConnectionPicker(); }
+            else if (action == "ssh.save") { var config = JsonSerializer.Deserialize<SshConnectionConfig>(payload.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); var original = payload.TryGetProperty("originalName", out var existing) ? existing.GetString() : null; if (config != null && !string.IsNullOrWhiteSpace(config.Host) && !string.IsNullOrWhiteSpace(config.User)) SaveSshConnection(config, original); ShowConnectionPicker(); }
+            else if (action.StartsWith("plugins.") && payload.ValueKind == JsonValueKind.Object) { var package = payload.TryGetProperty("package", out var item) ? item.GetString() : null; var verb = action[9..]; if (verb == "install" && !string.IsNullOrWhiteSpace(package)) _ = _host.RunPluginAsync(new[] { "add", package }, _host.AppendLog); else if (verb == "remove" && !string.IsNullOrWhiteSpace(package)) _ = _host.RunPluginAsync(new[] { "remove", package }, _host.AppendLog); else if (verb == "update") _ = _host.RunPluginAsync(string.IsNullOrWhiteSpace(package) ? new[] { "update" } : new[] { "update", package }, _host.AppendLog); }
         });
     }
 
     /// <summary>打开设置窗口；保存后把设置应用到宿主。</summary>
     private void ShowSettingsForm()
     {
-        using var dlg = new SettingsForm(_settings);
-        if (dlg.ShowDialog(this) == DialogResult.OK)
+        if (_settingsWindow is { IsDisposed: false })
         {
-            dlg.Apply();
+            _settingsWindow.Show();
+            _settingsWindow.Activate();
+            return;
+        }
+
+        // Avoid a nested native modal loop from a WebView2 message callback: it can abort
+        // initialization of the independent settings WebView. Settings is modeless by design.
+        var window = new SettingsForm(_settings);
+        _settingsWindow = window;
+        window.FormClosed += (_, _) =>
+        {
+            if (ReferenceEquals(_settingsWindow, window)) _settingsWindow = null;
+            if (window.DialogResult != DialogResult.OK) return;
+            window.Apply();
             ApplyAgentQuestionHandling();
-            // 同步连接列表（复用运行中实例，新增/删除的服务器生效）
             _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections);
             _ = _managerAgent.RestartAsync();
-            // 本地连接特有设置
             if (_host is HostSupervisor hs)
             {
                 hs.AttachPort = _settings.AttachPort;
                 hs.WorkingDirectory = _settings.WorkingDirectory
                     ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             }
-        }
+        };
+        window.Show(this);
+        window.Activate();
     }
 
     /// <summary>引导安装 dsh（npm install -g @deepseek-ai/dsh@latest），输出实时进日志窗口。</summary>

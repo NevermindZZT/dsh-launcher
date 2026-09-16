@@ -17,6 +17,8 @@ public sealed class AppSettings
     public bool OpenLinksInWebView { get; set; }
     /// <summary>true = Launcher also shows a standalone overlay for Agent questions and approvals; dsh's native Web UI always remains available (default).</summary>
     public bool HandleAgentQuestions { get; set; } = true;
+    /// <summary>true = Launcher intercepts dsh native file/directory pickers and uses its standalone cross-platform picker.</summary>
+    public bool InterceptNativeFilePicker { get; set; } = true;
 
     /// <summary>SSH 连接配置列表（多主机；本地连接始终存在，SSH 按 AutoConnect 并行连接）。</summary>
     public System.Collections.Generic.List<SshConnectionConfig> SshConnections { get; set; } = new();

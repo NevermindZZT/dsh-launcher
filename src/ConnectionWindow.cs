@@ -213,6 +213,8 @@ public sealed class ConnectionWindow : Form
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionConfigScript(_main.HandleAgentQuestions));
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.FilePickerInterceptorScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.FilePickerConfigScript(_main.InterceptNativeFilePicker));
         await WebModalRouter.Install(_web);
         WebView2PermissionPolicy.Attach(cwv);
         cwv.WebMessageReceived += (_, e) =>
@@ -220,6 +222,7 @@ public sealed class ConnectionWindow : Form
             var raw = e.TryGetWebMessageAsString();
             if (_browserInteractionReplies.TryComplete(raw)) return;
             if (_main.HandleBrowserInteraction(_conn, raw, ReplyBrowserInteractionAsync)) return;
+            if (TryHandleRemotePicker(raw)) return;
             if (BrowserNotificationBridge.TryParse(raw, out var notice))
             {
                 _main.ShowSystemNotification(
@@ -285,10 +288,6 @@ public sealed class ConnectionWindow : Form
                 if (action == "manager.open") { _ = _main.ShowManagerFromChildAsync(); return; }
                 if (action == "launcher.checkUpdate") { _ = ShowAboutAsync(checkUpdates: true); return; }
                  if (action == "dsh.update") { _ = UpdateDshFromAboutAsync(); return; }
-                if (action == "folder.parent") { _ = ParentFolderAsync(payload); return; }
-                if (action == "folder.select") { _ = SelectFolderAsync(payload); return; }
-                if (action == "folder.create") { _ = CreateFolderAsync(payload); return; }
-                if (action == "folder.refresh") { _ = ListFolderAsync(payload); return; }
             })) return;
             WebShellBridge.TryHandleWindowCommand(this, raw, action =>
             {
@@ -333,118 +332,17 @@ public sealed class ConnectionWindow : Form
             });
         };
 
-        // 注入远端文件选择拦截：dsh UI 的「工作区加号」等调起浏览器文件选择器（只能选客户端本地），
-        // 这里拦截 input[type=file].click / showDirectoryPicker → 通知启动器弹远端目录浏览器。
-        const string pickerScript = @"(function(){
-  if (window.__dshRemotePickerInstalled) return;
-  window.__dshRemotePickerInstalled = true;
-  function notify(msg) { window.chrome.webview.postMessage(msg || 'pick-folder'); }
-  function desc(t) {
-    if (!t) return 'null';
-    var cls = '';
-    try { cls = (typeof t.className === 'string' ? t.className : (t.className && t.className.baseVal ? t.className.baseVal : '')).slice(0, 50); } catch(err) {}
-    return t.tagName + (t.type ? '[' + t.type + ']' : '') + (t.id ? '#' + t.id : '') + (cls ? '.' + cls : '');
-  }
-  function fileRelated(e) {
-    var t = e.target;
-    if (t && t.tagName === 'INPUT' && t.type === 'file') return true;
-    // 事件路径（composedPath）里是否有文件 input
-    var path = e.composedPath ? e.composedPath() : [];
-    for (var i = 0; i < path.length; i++) { if (path[i] && path[i].tagName === 'INPUT' && path[i].type === 'file') return true; }
-    // label[for] 关联文件 input
-    var lab = t && t.closest ? t.closest('label[for]') : null;
-    if (lab) {
-      var target = document.getElementById(lab.htmlFor);
-      if (target && target.tagName === 'INPUT' && target.type === 'file') return true;
-    }
-    // 点击元素是文件 input 的兄弟/父级（input 被隐藏，点击 SVG 触发它）
-    var p = t && t.parentElement ? t.parentElement : null;
-    if (p) {
-      if (p.tagName === 'INPUT' && p.type === 'file') return true;
-      for (var j = 0; j < p.children.length; j++) {
-        if (p.children[j].tagName === 'INPUT' && p.children[j].type === 'file') return true;
-      }
-    }
-    return false;
-  }
-  // 精准拦截：dsh 前端发起 host.pickDirectory（打开文件夹的 flow 请求，后端会弹系统对话框）
-  // —— 拦截该 WebSocket 请求（阻止后端在服务器上弹窗），改为弹启动器远端目录浏览器
-  var origSend = WebSocket.prototype.send;
-  WebSocket.prototype.send = function(data) {
-    try {
-      var s = typeof data === 'string' ? data : '[binary]';
-      if (s.indexOf('pickDirectory') >= 0 || s.indexOf('workspace.create') >= 0) {
-        notify('pick-folder');
-        return;
-      }
-      notify('send:' + s.slice(0, 100));
-    } catch(err) {}
-    return origSend.apply(this, arguments);
-  };
-  // 点击层精准拦截：dsh「添加工作区」按钮（aria-label/title 含「添加工作区 / Add workspace」），
-  // 阻止其 flow（远端弹系统对话框无效）→ 弹启动器远端浏览器
-  function matchAddBtn(t) {
-    var b = t && t.closest ? t.closest('button') : null;
-    var guard = 0;
-    while (b && guard++ < 8) {
-      var al = (b.getAttribute('aria-label') || b.title || '');
-      if (al.indexOf('添加工作区') >= 0 || al.indexOf('Add workspace') >= 0) return true;
-      b = b.parentElement && b.parentElement.closest ? b.parentElement.closest('button') : null;
-    }
-    return false;
-  }
-  document.addEventListener('click', function(e) {
-    if (matchAddBtn(e.target)) {
-      e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
-      notify('pick-folder');
-      return;
-    }
-  }, true);
-  // 动态创建的 input[type=file]（MutationObserver 兜底）
-  var origClick = HTMLInputElement.prototype.click;
-  HTMLInputElement.prototype.click = function() {
-    if (this.type === 'file') { notify('pick-folder'); return; }
-    return origClick.apply(this, arguments);
-  };
-  try {
-    var mo = new MutationObserver(function(muts){
-      muts.forEach(function(m){
-        if (m.addedNodes) m.addedNodes.forEach(function(n){
-          if (n.tagName === 'INPUT' && n.type === 'file') {
-            n.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); notify('pick-folder'); }, true);
-          }
-        });
-      });
-    });
-    mo.observe(document, {childList: true, subtree: true});
-  } catch(err) {}
-  if (window.showDirectoryPicker) {
-    window.showDirectoryPicker = function(){ notify('pick-folder'); return new Promise(function(){}); };
-  }
-  if (window.showOpenFilePicker) {
-    window.showOpenFilePicker = function(){ notify('pick-folder'); return new Promise(function(){}); };
-  }
-  if (window.showSaveFilePicker) {
-    window.showSaveFilePicker = function(){ notify('pick-folder'); return new Promise(function(){}); };
-  }
-})();";
-        try { await cwv.AddScriptToExecuteOnDocumentCreatedAsync(pickerScript); } catch { }
-        cwv.WebMessageReceived += (_, e) =>
-        {
-            var msg = e.TryGetWebMessageAsString();
-            if (!string.IsNullOrEmpty(msg) && msg.StartsWith("click:") && msg.Length > 60) msg = msg.Substring(0, 60);
-            _conn.AppendLog($"[SSH页面] message: {msg}");
-            if (msg == "pick-folder") SafeUi(OpenRemoteFolder);
-        };
+        // Shared picker interception watches the authenticated directoryPicker/pick RPC.
+        // The browser request remains pending until the standalone SSH picker resolves or cancels it.
 
         cwv.NavigationCompleted += (_, e) =>
         {
             if (e.IsSuccess) SafeUi(HideLoading);
-            // 诊断：检查文件选择拦截脚本是否注入成功
+            // Verify the shared, gated picker interceptor without logging page traffic.
             try
             {
-                _ = cwv.ExecuteScriptAsync("window.__dshRemotePickerInstalled === true ? 'installed' : 'missing'")
-                    .ContinueWith(t => _conn.AppendLog($"[SSH页面] picker interceptor: {t.Result ?? "err"}"));
+                _ = cwv.ExecuteScriptAsync("window.__dshLauncherPickerInstalled === true ? 'installed' : 'missing'")
+                    .ContinueWith(t => _conn.AppendLog($"[SSH页面] shared picker: {t.Result ?? "err"}"));
             }
             catch { }
         };
@@ -465,9 +363,78 @@ public sealed class ConnectionWindow : Form
         _conn.Ready += url => SafeUi(() => { Navigate(url); HideLoading(); });
     }
 
+    private bool TryHandleRemotePicker(string raw)
+    {
+        string? requestId = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("type", out var type) || type.GetString() != "launcher-picker") return false;
+            requestId = root.TryGetProperty("requestId", out var id) ? id.GetString() : null;
+            if (string.IsNullOrWhiteSpace(requestId)) return true;
+            if (!_main.InterceptNativeFilePicker)
+            {
+                ResolvePickerResult(requestId, null);
+                return true;
+            }
+            OpenRemotePicker(requestId);
+            return true;
+        }
+        catch
+        {
+            if (!string.IsNullOrWhiteSpace(requestId)) ResolvePickerResult(requestId, null);
+            return true;
+        }
+    }
+
+    private void OpenRemotePicker(string? requestId, Action<string>? onSelected = null)
+    {
+        if (_conn is not SshConnection ssh)
+        {
+            if (!string.IsNullOrWhiteSpace(requestId)) ResolvePickerResult(requestId, null);
+            return;
+        }
+        try
+        {
+            var picker = new WorkspacePickerWindow($"DshLauncher 选择远端文件夹 · {_conn.DisplayName}", ssh.GetRemoteHomeDirectory(), true,
+                path => ssh.ListRemoteEntries(path).Select(item => new WorkspacePickerWindow.Entry(item.Path, item.IsDirectory)).ToList());
+            var settled = false;
+            picker.PathConfirmed += path =>
+            {
+                if (settled) return;
+                settled = true;
+                if (!string.IsNullOrWhiteSpace(requestId)) ResolvePickerResult(requestId, path);
+                else onSelected?.Invoke(path);
+            };
+            picker.FormClosed += (_, _) =>
+            {
+                if (!settled && !string.IsNullOrWhiteSpace(requestId)) ResolvePickerResult(requestId, null);
+            };
+            picker.Show(this);
+        }
+        catch
+        {
+            if (!string.IsNullOrWhiteSpace(requestId)) ResolvePickerResult(requestId, null);
+        }
+    }
+
+    private void ResolvePickerResult(string requestId, string? path)
+    {
+        if (_web.CoreWebView2 == null) return;
+        var script = "if(typeof window.__dshLauncherResolvePicker==='function')window.__dshLauncherResolvePicker(" +
+            JsonSerializer.Serialize(requestId) + "," + JsonSerializer.Serialize(path) + ");";
+        _ = _web.CoreWebView2.ExecuteScriptAsync(script);
+    }
+
     internal void ApplyAgentQuestionHandling(bool enabled)
     {
         if (_web.CoreWebView2 != null) _ = _web.CoreWebView2.ExecuteScriptAsync(WebShell.BrowserInteractionConfigScript(enabled));
+    }
+
+    internal void ApplyFilePickerInterception(bool enabled)
+    {
+        if (_web.CoreWebView2 != null) _ = _web.CoreWebView2.ExecuteScriptAsync(WebShell.FilePickerConfigScript(enabled));
     }
 
     private async Task ReplyBrowserInteractionAsync(string eventId, string clientId, DshInteractionDecision decision)
@@ -601,28 +568,10 @@ public sealed class ConnectionWindow : Form
         }
     }
 
-    /// <summary>打开远端目录浏览器，默认显示 SSH 用户主目录。</summary>
+    /// <summary>打开独立的 POSIX 远端目录选择器。</summary>
     private void OpenRemoteFolder()
     {
-        if (_conn is not SshConnection)
-        {
-            MessageBox.Show(this, "仅 SSH 远程连接支持此功能。", "打开远端文件夹", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        // 先显示选择器，再异步读取用户主目录，避免弹窗迟迟不出现。
-        WebModalRouter.Open(_web, "folder", new { page = "folder", path = "~", entries = Array.Empty<object>() });
-        _ = ListFolderAsync(default);
-    }
-
-    /// <summary>重新导航当前 URL（刷新页面）。</summary>
-    private void NavigateCurrent()
-    {
-        try
-        {
-            if (_web.Source != null) _web.Reload();
-        }
-        catch { }
+        OpenRemotePicker(null, path => _ = AddFolderAsync(path));
     }
 
     /// <summary>Ctrl+Shift+Y：把本地 dsh 配置与插件同步到本服务器，完成后可选重启远端。</summary>
@@ -683,79 +632,19 @@ public sealed class ConnectionWindow : Form
         catch (Exception ex) { Diag.Log($"读取 SSH 日志失败: {ex.Message}"); return ""; }
     }
 
-    private Task ListFolderAsync(JsonElement p) => OpenFolderAsync(GetFolderPath(p));
 
-    private Task ParentFolderAsync(JsonElement p) => OpenFolderAsync(ParentFolderPath(GetFolderPath(p)));
-
-    private async Task OpenFolderAsync(string path)
+    private async Task AddFolderAsync(string path)
     {
         if (_conn is not SshConnection sc) return;
-        path = string.IsNullOrWhiteSpace(path) ? "~" : path.Trim();
-        try
-        {
-            var requestedPath = path;
-            var entries = await Task.Run(() =>
-            {
-                if (requestedPath == "~") requestedPath = sc.GetRemoteHomeDirectory();
-                return sc.ListRemoteEntries(requestedPath)
-                    .Select(x => new { x.Path, x.IsDirectory })
-                    .ToArray();
-            });
-            path = requestedPath;
-            var dirs = entries.Where(x => x.IsDirectory).Select(x => x.Path).ToArray();
-            WebModalRouter.Open(_web, "folder", new { page = "folder", path, entries, dirs });
-        }
-        catch (Exception ex)
-        {
-            _conn.AppendLog(ex.Message);
-            MessageBox.Show(this, ex.Message, "读取远端目录失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-    }
+        path = path?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) return;
 
-    private static string GetFolderPath(JsonElement p)
-    {
-        return p.ValueKind == JsonValueKind.Object && p.TryGetProperty("path", out var q)
-            ? q.GetString()?.Trim() ?? "~"
-            : "~";
-    }
-
-    private static string ParentFolderPath(string path)
-    {
-        var current = string.IsNullOrWhiteSpace(path) ? "~" : path.Trim();
-        if (current == "/") return "/";
-        if (current == "~") return "/";
-        var normalized = current.TrimEnd('/');
-        var slash = normalized.LastIndexOf('/');
-        return slash <= 0 ? "/" : normalized[..slash];
-    }
-
-    private Task SelectFolderAsync(JsonElement p) => AddFolderAsync(p);
-
-    private Task CreateFolderAsync(JsonElement p) => AddFolderAsync(p);
-
-    private async Task AddFolderAsync(JsonElement p)
-    {
-        if (_conn is not SshConnection sc) return;
-        var path = p.TryGetProperty("path", out var q) ? q.GetString()?.Trim() : null;
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            MessageBox.Show(this, "请输入或选择远端目录。", "添加工作区", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        WebModalRouter.Close(_web);
         ShowLoading($"正在添加工作区 {path} …");
         try
         {
             var (ok, error) = await sc.CreateWorkspaceRpcAsync(path, line => SafeUi(() => _loadingText.Text = line));
-            if (!ok)
-            {
-                ShowLoading($"RPC 失败（{error}），改用配置文件并重启远端…");
-                await sc.AddRemoteWorkspaceAsync(path, line => SafeUi(() => _loadingText.Text = line));
-                ShowLoading("正在重启远端 dsh 使工作区生效…");
-                await sc.RestartAsync();
-            }
-            NavigateCurrent();
+            if (!ok) throw new InvalidOperationException("工作区创建失败：" + (error ?? "dsh 未接受工作区创建请求"));
+            // workspace/create updates the dsh workspace feed; do not restart or reload the SSH session.
         }
         catch (Exception ex)
         {

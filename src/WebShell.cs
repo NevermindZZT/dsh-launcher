@@ -43,4 +43,28 @@ document.addEventListener('DOMContentLoaded',install,{once:true});if(document.re
 
     public static string BrowserInteractionConfigScript(bool enabled) =>
         $"window.__dshLauncherHandleAgentQuestions = {(enabled ? "true" : "false")};";
+
+    public const string FilePickerInterceptorScript = """
+(function(){
+ if(window.__dshLauncherPickerInstalled)return;window.__dshLauncherPickerInstalled=true;
+ var pending={};
+ function post(v){try{window.chrome.webview.postMessage(JSON.stringify(v))}catch(_){} }
+ function urlOf(input){return typeof input==='string'?input:String(input&&(input.url||input.href)||input||'')}
+ var nativeFetch=window.fetch;
+ if(typeof nativeFetch==='function')try{window.fetch=function(input,init){
+  var url=urlOf(input),method=String(init&&init.method||'GET').toUpperCase(),body=init&&init.body,message;
+  if(window.__dshLauncherInterceptFilePicker!==true||method!=='POST'||url.indexOf('/api/directoryPicker/pick')<0||typeof body!=='string')return nativeFetch.apply(this,arguments);
+  try{message=JSON.parse(body)}catch(_){return nativeFetch.apply(this,arguments)}
+  if(!message||message.type!=='client-request'||message.method!=='directoryPicker/pick'||!message.rpcId)return nativeFetch.apply(this,arguments);
+  var requestId='launcher-picker-'+Date.now()+'-'+Math.random();
+  post({type:'launcher-picker',kind:'directory',requestId:requestId});
+  return new Promise(function(resolve){pending[requestId]=function(path){delete pending[requestId];var result={type:'server-response',rpcId:message.rpcId,result:{ok:true,value:path==null?null:String(path)}};resolve(new Response(JSON.stringify(result),{status:200,headers:{'content-type':'application/json'}}))}})
+ }}catch(_){}
+ window.__dshLauncherResolvePicker=function(requestId,path){var resolve=pending[String(requestId||'')];if(resolve)resolve(path==null?null:String(path))};
+})();
+""";
+
+    public static string FilePickerConfigScript(bool enabled) =>
+        $"window.__dshLauncherInterceptFilePicker = {(enabled ? "true" : "false")};";
+
 }

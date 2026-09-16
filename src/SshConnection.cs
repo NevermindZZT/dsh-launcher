@@ -351,8 +351,8 @@ public sealed class SshConnection : IDshConnection, IDisposable
     /// <summary>把选中的远端路径写入 dsh 工作区存储（~/.dsh/storages/workspace.json），刷新页面即可见。</summary>
 
     /// <summary>
-    /// 通过 dsh RPC（HTTP POST /api/workspace.create）在远端创建 dsh 工作区 —— 走后端正常流程，无需重启。
-    /// 协议（读 dsh-client-connection 源码）：{ type: client-request, rpcId, method: workspace.create, payload: { path } }
+    /// 通过 dsh RPC（HTTP POST /api/workspace/create）在远端创建 dsh 工作区 —— 走后端正常流程，无需重启。
+    /// 协议（读 dsh-client-connection 源码）：{ type: client-request, rpcId, method: workspace/create, payload: { args: { request: { path } } } }
     /// 响应 { type: server-response, rpcId, result: { ok, value: { workspace, created } } }；loopback 信任免认证。
     /// </summary>
     public async Task<(bool ok, string? error)> CreateWorkspaceRpcAsync(string path, Action<string>? onOutput = null, CancellationToken ct = default)
@@ -365,12 +365,18 @@ public sealed class SshConnection : IDshConnection, IDisposable
             {
                 ["type"] = "client-request",
                 ["rpcId"] = rpcId,
-                ["method"] = "workspace.create",
-                ["payload"] = new System.Text.Json.Nodes.JsonObject { ["path"] = path },
+                ["method"] = "workspace/create",
+                ["payload"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["args"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["request"] = new System.Text.Json.Nodes.JsonObject { ["path"] = path },
+                    },
+                },
             };
-            onOutput?.Invoke($"RPC workspace.create → {path}");
+            onOutput?.Invoke($"RPC workspace/create → {path}");
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-            using var req = new HttpRequestMessage(HttpMethod.Post, _localUrl + "/api/workspace.create");
+            using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(_localUrl).GetLeftPart(UriPartial.Authority) + "/api/workspace/create"));
             req.Content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
             using var resp = await client.SendAsync(req, ct);
             if (!resp.IsSuccessStatusCode) return (false, $"HTTP {(int)resp.StatusCode}");

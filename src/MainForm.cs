@@ -407,6 +407,8 @@ public sealed class MainForm : Form
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionConfigScript(_settings.HandleAgentQuestions));
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.FilePickerInterceptorScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.FilePickerConfigScript(_settings.InterceptNativeFilePicker));
         // Launcher menus now use dedicated WebView2 windows; never inject modal UI into dsh.
         cwv.WebMessageReceived += (_, e) =>
         {
@@ -414,6 +416,7 @@ public sealed class MainForm : Form
             Diag.Log($"WebMessageReceived raw={raw}");
             if (_browserInteractionReplies.TryComplete(raw)) return;
             if (HandleBrowserInteraction(_connections.Local, raw, ReplyMainBrowserInteractionAsync)) return;
+            if (TryHandleLocalPicker(raw)) return;
             if (BrowserNotificationBridge.TryParse(raw, out var notice))
             {
                 _notifications.Show(notice.Title, notice.Body, ShowMainWindow, notice.RequireInteraction);
@@ -1184,10 +1187,62 @@ public sealed class MainForm : Form
         window.Activate();
     }
 
+    private bool TryHandleLocalPicker(string raw)
+    {
+        string? requestId = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("type", out var type) || type.GetString() != "launcher-picker") return false;
+            requestId = root.TryGetProperty("requestId", out var id) ? id.GetString() : null;
+            if (string.IsNullOrWhiteSpace(requestId)) return true;
+            if (!_settings.InterceptNativeFilePicker)
+            {
+                ResolvePickerResult(requestId, null);
+                return true;
+            }
+
+            var initial = _settings.WorkingDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!Directory.Exists(initial)) initial = "";
+            var picker = new WorkspacePickerWindow("DshLauncher 选择本地文件夹", initial, false, path =>
+                string.IsNullOrWhiteSpace(path)
+                    ? DriveInfo.GetDrives().Where(drive => drive.IsReady).Select(drive => new WorkspacePickerWindow.Entry(drive.RootDirectory.FullName, true)).ToList()
+                    : Directory.Exists(path)
+                        ? Directory.EnumerateDirectories(path).Select(x => new WorkspacePickerWindow.Entry(x, true)).OrderBy(x => x.Path, StringComparer.OrdinalIgnoreCase).ToList()
+                        : new List<WorkspacePickerWindow.Entry>());
+            var settled = false;
+            picker.PathConfirmed += path =>
+            {
+                if (settled) return;
+                settled = true;
+                ResolvePickerResult(requestId, path);
+            };
+            picker.FormClosed += (_, _) =>
+            {
+                if (!settled) ResolvePickerResult(requestId, null);
+            };
+            picker.Show(this);
+            return true;
+        }
+        catch
+        {
+            if (!string.IsNullOrWhiteSpace(requestId)) ResolvePickerResult(requestId, null);
+            return true;
+        }
+    }
+
+    private void ResolvePickerResult(string requestId, string? path)
+    {
+        if (_web.CoreWebView2 == null) return;
+        var script = "if(typeof window.__dshLauncherResolvePicker==='function')window.__dshLauncherResolvePicker(" +
+            JsonSerializer.Serialize(requestId) + "," + JsonSerializer.Serialize(path) + ");";
+        _ = _web.CoreWebView2.ExecuteScriptAsync(script);
+    }
+
     /// <summary>引导安装 dsh（npm install -g @deepseek-ai/dsh@latest），输出实时进日志窗口。</summary>
     private async Task InstallDshAndContinueAsync()
     {
-        ShowLogForm();
         _host.AppendLog(">>> npm install -g @deepseek-ai/dsh@latest");
         try
         {
@@ -1328,12 +1383,13 @@ public sealed class MainForm : Form
     }
 
     internal bool HandleAgentQuestions => _settings.HandleAgentQuestions;
+    internal bool InterceptNativeFilePicker => _settings.InterceptNativeFilePicker;
 
     private void ApplyAgentQuestionHandling()
     {
         var script = WebShell.BrowserInteractionConfigScript(_settings.HandleAgentQuestions);
-        if (_web.CoreWebView2 != null) _ = _web.CoreWebView2.ExecuteScriptAsync(script);
-        foreach (var window in _remoteWindows.Where(window => !window.IsDisposed)) window.ApplyAgentQuestionHandling(_settings.HandleAgentQuestions);
+        if (_web.CoreWebView2 != null) { _ = _web.CoreWebView2.ExecuteScriptAsync(script); _ = _web.CoreWebView2.ExecuteScriptAsync(WebShell.FilePickerConfigScript(_settings.InterceptNativeFilePicker)); }
+        foreach (var window in _remoteWindows.Where(window => !window.IsDisposed)) { window.ApplyAgentQuestionHandling(_settings.HandleAgentQuestions); window.ApplyFilePickerInterception(_settings.InterceptNativeFilePicker); }
         // Turning the optional surface off must not answer the dsh event. The native Web UI remains open and will emit the normal cancel frame after the user resolves it.
         if (!_settings.HandleAgentQuestions && _interactionOverlay is { IsDisposed: false } overlay)
         {

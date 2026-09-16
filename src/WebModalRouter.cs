@@ -124,7 +124,7 @@ internal static class WebModalRouter
   var esc=function(x){return String(x??'').replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]})};
 
   window.__dshModal=function(raw){
-     var parsed=JSON.parse(raw);if(typeof parsed==='string'){try{parsed=JSON.parse(parsed)}catch(_){}}var m=parsed||{},page=String(m.page||'').trim().toLowerCase(),titles={settings:t('设置','Settings'),manager:t('dsh-manager','dsh-manager'),about:t('关于','About'),logs:t('运行日志','Logs'),plugins:t('插件管理','Plugins'),ssh:t('SSH 连接','SSH Connections'),folder:t('工作区','Workspace'),'ssh-edit':t('SSH 连接配置','SSH Connection')},body='';if(!titles[page])page='about';
+     var parsed=JSON.parse(raw);if(typeof parsed==='string'){try{parsed=JSON.parse(parsed)}catch(_){}}var m=parsed||{},page=String(m.page||'').trim().toLowerCase(),titles={settings:t('设置','Settings'),manager:t('dsh-manager','dsh-manager'),about:t('关于','About'),logs:t('运行日志','Logs'),plugins:t('插件管理','Plugins'),ssh:t('SSH 连接','SSH Connections'),'ssh-edit':t('SSH 连接配置','SSH Connection')},body='';if(!titles[page])page='about';
     window.__dshSelectedPlugin='';
 
     if(page==='manager'){
@@ -176,13 +176,6 @@ internal static class WebModalRouter
       }).join('')+'</div>';
     }else if(page==='logs'){
       body='<textarea id="logbox" readonly>'+esc(m.history||'')+'</textarea><div class="actions"><button id="clear">'+t('清空','Clear')+'</button></div>';
-    }else if(page==='folder'){
-      body='<div class="form-row"><label>'+t('路径','Path')+'</label><input id="path" placeholder="/home/user/workspace" value="'+esc(m.path||'')+'"></div>'+
-        '<div class="actions"><button id="refresh">'+t('跳转','Go')+'</button><button id="parent">'+t('返回上一级','Up')+'</button><button class="primary" id="choose">'+t('选择此目录','Choose this folder')+'</button><button id="create">'+t('创建并添加','Create')+'</button></div>'+
-        '<div id="dirs" class="folder-list">'+(m.entries||((m.dirs||[]).map(function(x){return {path:x,isDirectory:true};}))).map(function(x){
-          var p=x.path||x.Path||'',d=x.isDirectory!==undefined?x.isDirectory:x.IsDirectory;
-          return d?'<button type="button" data-folder-path="'+esc(p)+'"><span class="folder-icon" aria-hidden="true">📁</span><span>'+esc(p)+'</span></button>':'<div class="folder-file"><span class="folder-icon" aria-hidden="true">📄</span><span>'+esc(p)+'</span></div>';
-        }).join('')+'</div>';
     }else if(page==='ssh'){
       body='<div class="actions"><button class="primary" id="add">'+t('新增 SSH','Add SSH')+'</button></div><div class="items">'+(m.ssh||[]).map(function(x){
         var n=x.name||x.Name;
@@ -251,15 +244,12 @@ internal static class WebModalRouter
     }
     try{var nums=(getComputedStyle(o).color.match(/\d+(?:\.\d+)?/g)||[]);if(nums.length>=3){var y=(+nums[0]*299+ +nums[1]*587+ +nums[2]*114)/1000;o.style.colorScheme=y>160?'dark':'light';}}catch(_){ }
     var val=function(id){return o.querySelector('#'+id)?.value||''};
-    var pathInput=o.querySelector('#path');
-    if(pathInput)pathInput.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();send('folder.refresh',{path:val('path')});}});
     var close=function(){o.remove();};
     o.onclick=function(e){
       var el=e.target;
       if(!el||!el.closest)return;
       var row=el.closest('.plugin-row');
       if(el.id==='x'||el.id==='cancel'||el.id==='ssh-cancel'||el.classList.contains('backdrop'))close();
-      else if(el.closest('[data-folder-path]')){var folder=el.closest('[data-folder-path]');send('folder.refresh',{path:folder.dataset.folderPath});}
       else if(el.id==='manager-login'){if(el.disabled)return;el.disabled=true;el.textContent=t('登录中…','Signing in…');send('manager.login',{serverUrl:val('manager-url'),username:val('manager-username'),password:val('manager-password')});}
       else if(el.id==='manager-refresh')send('manager.refresh');
       else if(el.id==='manager-logout')send('manager.logout');
@@ -276,10 +266,6 @@ internal static class WebModalRouter
       else if(el.id==='launcher-check-update')send('launcher.checkUpdate');
       else if(el.id==='dsh-update')send('dsh.update');
       else if(el.id==='clear')send('logs.clear');
-      else if(el.id==='refresh')send('folder.refresh',{path:val('path')});
-      else if(el.id==='parent')send('folder.parent',{path:val('path')});
-      else if(el.id==='choose')send('folder.select',{path:val('path')});
-      else if(el.id==='create')send('folder.create',{path:val('path')});
       else if(el.id==='ssh-save')send('ssh.save',{originalName:m.originalName||'',name:val('ssh-name'),host:val('ssh-host'),port:+(val('ssh-port')||22),user:val('ssh-user'),authMethod:o.querySelector('#ssh-auth').value,keyPath:val('ssh-key'),password:val('ssh-password'),localPort:+(val('ssh-local')||0),remotePort:+(val('ssh-remote')||0),remoteNode:val('ssh-node'),remoteDshBin:val('ssh-dsh'),stopRemoteOnClose:o.querySelector('#ssh-stop').checked,autoConnect:o.querySelector('#ssh-auto').checked});
       else if(el.id==='add')send('ssh.form',{mode:'add'});
       else if(el.dataset.edit)send('ssh.form',{mode:'edit',name:el.dataset.edit});

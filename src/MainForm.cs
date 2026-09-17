@@ -8,8 +8,8 @@ using Microsoft.Web.WebView2.WinForms;
 namespace DshLauncher;
 
 /// <summary>
-/// 主窗口：无工具栏/状态栏，WebView2 独占窗口内容。
-/// 标题栏配色自动跟随系统深色/浅色模式（DWM），WebView2 背景同为深色，与 dsh 深色 UI 一致。
+/// 主窗口：标准 Windows 原生标题栏，WebView2 负责 dsh 内容。
+/// 标题栏主题跟随 dsh 页面主题；命令入口通过标题栏右键菜单提供，不额外占用 WebView 高度。
 /// 全部控制入口在托盘菜单与快捷键：Ctrl+Shift+R 重启 / Ctrl+Shift+L 日志 / Ctrl+Shift+P 插件 / Ctrl+Shift+S 设置 / Ctrl+Shift+Q 退出。
 /// 关闭窗口默认隐藏到托盘（宿主保持运行）；托盘「退出」才停止服务。
 /// </summary>
@@ -38,6 +38,7 @@ public sealed class MainForm : Form
     private readonly List<LinkWindow> _linkWindows = new();
     private SettingsForm? _settingsWindow;
     private LauncherModalWindow? _launcherModal;
+    private NativeCaptionChrome? _captionChrome;
     private const string ShowEventName = "Local\\DshLauncher_ShowWindow";
     private EventWaitHandle? _showEvent;
     private Thread? _showWatcher;
@@ -87,13 +88,13 @@ public sealed class MainForm : Form
         _current = _connections.Local;
         Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
         Text = "DeepSeek Harness";
-        FormBorderStyle = FormBorderStyle.None;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        ControlBox = true;
         MinimizeBox = true;
-        // 无边框窗口仍保留最小化系统样式，确保任务栏点击可最小化。
-        Resize += (_, _) => WebShellBridge.ApplyShape(this);
+        MaximizeBox = true;
         ResizeEnd += (_, _) => SaveWindowStateFor(this, ConnectionManager.IdOf(_current));
         // 在窗口句柄/主题初始化前就设置深色背景，避免冷启动首帧出现白条
-        var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
+        var initialPalette = ThemeHelper.GetPalette(true);
         BackColor = initialPalette.WindowBack;
         ForeColor = initialPalette.Text;
         _web.DefaultBackgroundColor = initialPalette.WindowBack;
@@ -124,7 +125,15 @@ public sealed class MainForm : Form
             _loadingText.Height = 36;
         };
         Controls.Add(_loadingOverlay);
-        WebShellBridge.InstallResizeGrips(this);
+        _captionChrome = NativeCaptionChrome.Attach(this, Icon);
+        _captionChrome.AddButton("设置", ShowSettingsForm);
+        _captionChrome.AddButton("Manager", () => _ = ShowManagerAsync());
+        _captionChrome.AddMenuButton("工具",
+            new CaptionMenuItem("日志", ShowLogForm),
+            new CaptionMenuItem("插件管理", ShowPluginsForm),
+            new CaptionMenuItem("SSH Remote", ShowConnectionPicker),
+            new CaptionMenuItem("重启 dsh", () => _ = RestartHostAsync()));
+        _captionChrome.AddButton("关于", () => _ = ShowAboutAsync());
 
         // 托盘：全部控制入口
         _tray = new NotifyIcon
@@ -237,9 +246,10 @@ public sealed class MainForm : Form
 
     private void ApplyTheme()
     {
-        ThemeHelper.ApplyTitleBarTheme(Handle, ThemeHelper.IsSystemDarkMode());
+        // 在 dsh 页面主题尚未上报前保持深色回退；页面主题上报后不覆盖它。
         // 加载层配色跟随主题
-        var p = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
+        var p = ThemeHelper.GetPalette(true);
+        _captionChrome?.ApplySystemFallbackPalette();
         _loadingOverlay.BackColor = p.WindowBack;
         _loadingText.ForeColor = p.MutedText;
         _spinner.SetAccent(p.Accent);
@@ -406,7 +416,9 @@ public sealed class MainForm : Form
             }
             catch { }
         };
-        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.NativeChromeGuardScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.HostBridgeScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.NativeThemeScript);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionConfigScript(_settings.HandleAgentQuestions));
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.FilePickerInterceptorScript);
@@ -415,6 +427,7 @@ public sealed class MainForm : Form
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
+            if (_captionChrome?.TryApplyThemeMessage(raw) == true) return;
             Diag.Log($"WebMessageReceived raw={raw}");
             if (_browserInteractionReplies.TryComplete(raw)) return;
             if (HandleBrowserInteraction(_connections.Local, raw, ReplyMainBrowserInteractionAsync)) return;
@@ -470,12 +483,6 @@ public sealed class MainForm : Form
             {
                 var displayTitle = WebShellBridge.FormatSessionTitle(title);
                 if (Text != displayTitle) Text = displayTitle;
-                try
-                {
-                    var encoded = JsonSerializer.Serialize(displayTitle);
-                    _ = cwv.ExecuteScriptAsync($"window.__dshLauncherSetTitle && window.__dshLauncherSetTitle({encoded})");
-                }
-                catch { }
             });
         };
         cwv.NavigationCompleted += (_, e) =>
@@ -603,6 +610,7 @@ public sealed class MainForm : Form
         {
             if (form is MainForm main) main.SetWorkAreaMaximizedBounds(area);
             else if (form is ConnectionWindow remote) remote.SetWorkAreaMaximizedBounds(area);
+            else if (form is ManagerConnectionWindow manager) manager.SetWorkAreaMaximizedBounds(area);
             form.WindowState = FormWindowState.Maximized;
         }
     }
@@ -621,32 +629,9 @@ public sealed class MainForm : Form
         _settings.Save();
     }
 
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            var cp = base.CreateParams;
-            // FormBorderStyle.None 不一定生成 WS_MINIMIZEBOX；补上后 Shell 会把任务栏点击
-            // 转换为 SC_MINIMIZE，而不是仅激活当前窗口。
-            cp.Style |= 0x00020000; // WS_MINIMIZEBOX
-            cp.Style |= 0x00080000; // WS_SYSMENU
-            cp.ExStyle |= 0x00040000; // WS_EX_APPWINDOW
-            return cp;
-        }
-    }
-
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == 0x0112 && (m.WParam.ToInt64() & 0xFFF0L) == 0xF020L) // WM_SYSCOMMAND/SC_MINIMIZE
-        {
-            WindowState = FormWindowState.Minimized;
-            return;
-        }
-        if (m.Msg == 0x84)
-        {
-            var hit = WebShellBridge.ResizeHitTest(this, PointToClient(Cursor.Position));
-            if (hit != 0) { m.Result = (IntPtr)hit; return; }
-        }
+        if (_captionChrome?.TryHandleWindowMessage(ref m) == true) return;
         base.WndProc(ref m);
     }
 

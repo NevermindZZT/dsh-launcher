@@ -32,6 +32,8 @@ internal static class WebShellBridge
         var session = (title ?? string.Empty).Trim();
         if (session.StartsWith(product, StringComparison.OrdinalIgnoreCase))
             session = session[product.Length..].Trim().TrimStart('-', '—', '–', ':').Trim();
+        if (session.EndsWith(product, StringComparison.OrdinalIgnoreCase))
+            session = session[..^product.Length].Trim().TrimEnd('-', '—', '–', ':').Trim();
         return string.IsNullOrWhiteSpace(session) ? product : $"{product} —— {session}";
     }
 

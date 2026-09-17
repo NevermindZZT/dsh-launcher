@@ -6,7 +6,7 @@ using Microsoft.Web.WebView2.WinForms;
 namespace DshLauncher;
 
 /// <summary>
-/// SSH 远程连接独立窗口：每个 SSH 连接一个窗口（独立 WebView + 独立 user data，会话互不干扰）。
+/// SSH 远程连接独立窗口：标准 Windows 原生标题栏，命令入口通过标题栏右键菜单提供；每个连接独立 WebView/user-data 会话。
 /// 快捷键 Ctrl+Shift+R/L/P/Q 作用于本窗口的连接。
 /// </summary>
 public sealed class ConnectionWindow : Form
@@ -15,6 +15,7 @@ public sealed class ConnectionWindow : Form
     private readonly MainForm _main;
     private readonly ShellWebView _web = new();
     private readonly BrowserDshInteractionReplyTracker _browserInteractionReplies = new();
+    private NativeCaptionChrome? _captionChrome;
     private readonly Panel _loadingOverlay = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 20, 24), Visible = true };
     private readonly LoadingSpinner _spinner = new() { Size = new Size(56, 56) };
     private readonly Label _loadingText = new()
@@ -33,13 +34,14 @@ public sealed class ConnectionWindow : Form
         _conn = conn;
         _main = main;
         Text = conn.DisplayName;
-        FormBorderStyle = FormBorderStyle.None;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        ControlBox = true;
         MinimizeBox = true;
+        MaximizeBox = true;
         ShowInTaskbar = true;
-        Resize += (_, _) => WebShellBridge.ApplyShape(this);
         ResizeEnd += (_, _) => _main.SaveWindowStateFor(this, ConnectionManager.IdOf(_conn));
         // 远程窗口首帧直接使用系统深色背景，避免冷启动白闪
-        var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
+        var initialPalette = ThemeHelper.GetPalette(true);
         BackColor = initialPalette.WindowBack;
         ForeColor = initialPalette.Text;
         _web.DefaultBackgroundColor = initialPalette.WindowBack;
@@ -67,7 +69,15 @@ public sealed class ConnectionWindow : Form
             _loadingText.Height = 36;
         };
         Controls.Add(_loadingOverlay);
-        WebShellBridge.InstallResizeGrips(this);
+        _captionChrome = NativeCaptionChrome.Attach(this, Icon);
+        _captionChrome.AddButton("设置", _main.ShowSettingsFromChild);
+        _captionChrome.AddButton("Manager", () => _ = _main.ShowManagerFromChildAsync());
+        _captionChrome.AddMenuButton("工具",
+            new CaptionMenuItem("日志", _main.ShowLogsFromChild),
+            new CaptionMenuItem("插件管理", _main.ShowPluginsFromChild),
+            new CaptionMenuItem("SSH Remote", _main.ShowConnectionPicker),
+            new CaptionMenuItem("重启 dsh", () => _ = RestartAsync()));
+        _captionChrome.AddButton("关于", _main.ShowAboutFromChild);
 
         FormClosing += (_, _) =>
         {
@@ -82,7 +92,7 @@ public sealed class ConnectionWindow : Form
     {
         base.OnShown(e);
         // Mica 深色（Handle 已就绪）
-        ThemeHelper.ApplyWindowTheme(Handle, ThemeHelper.IsSystemDarkMode());
+        ThemeHelper.ApplyWindowTheme(Handle, true);
         ShowLoading($"正在连接 {_conn.DisplayName}…");
         try
         {
@@ -213,7 +223,9 @@ public sealed class ConnectionWindow : Form
         cwv.Settings.AreDefaultContextMenusEnabled = true;
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
-        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.NativeChromeGuardScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.HostBridgeScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.NativeThemeScript);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionScript);
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.BrowserInteractionConfigScript(_main.HandleAgentQuestions));
         await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.FilePickerInterceptorScript);
@@ -223,6 +235,7 @@ public sealed class ConnectionWindow : Form
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
+            if (_captionChrome?.TryApplyThemeMessage(raw) == true) return;
             if (_browserInteractionReplies.TryComplete(raw)) return;
             if (_main.HandleBrowserInteraction(_conn, raw, ReplyBrowserInteractionAsync)) return;
             if (TryHandleRemotePicker(raw)) return;
@@ -326,12 +339,6 @@ public sealed class ConnectionWindow : Form
                 // 标题固定以产品名开头，并显示当前 SSH 会话名
                 var combined = WebShellBridge.FormatSessionTitle(_conn.DisplayName);
                 if (Text != combined) Text = combined;
-                try
-                {
-                    var encoded = JsonSerializer.Serialize(combined);
-                    _ = cwv.ExecuteScriptAsync($"window.__dshLauncherSetTitle && window.__dshLauncherSetTitle({encoded})");
-                }
-                catch { }
             });
         };
 
@@ -499,30 +506,9 @@ public sealed class ConnectionWindow : Form
     // ── 快捷键（作用于本窗口连接）──
     internal void SetWorkAreaMaximizedBounds(Rectangle bounds) => MaximizedBounds = bounds;
 
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            var cp = base.CreateParams;
-            cp.Style |= 0x00020000; // WS_MINIMIZEBOX
-            cp.Style |= 0x00080000; // WS_SYSMENU
-            cp.ExStyle |= 0x00040000; // WS_EX_APPWINDOW
-            return cp;
-        }
-    }
-
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == 0x0112 && (m.WParam.ToInt64() & 0xFFF0L) == 0xF020L)
-        {
-            WindowState = FormWindowState.Minimized;
-            return;
-        }
-        if (m.Msg == 0x84)
-        {
-            var hit = WebShellBridge.ResizeHitTest(this, PointToClient(Cursor.Position));
-            if (hit != 0) { m.Result = (IntPtr)hit; return; }
-        }
+        if (_captionChrome?.TryHandleWindowMessage(ref m) == true) return;
         base.WndProc(ref m);
     }
 

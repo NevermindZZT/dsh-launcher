@@ -25,6 +25,9 @@ public sealed class ManagerConnectionWindow : Form
         ForeColor = Color.FromArgb(0x9E, 0x9E, 0x9E),
     };
     private bool _quitting;
+    private NativeCaptionChrome? _captionChrome;
+
+    private string WindowStateKey => "manager:" + TargetKey;
 
     public string TargetKey => _target.AbsoluteUri;
 
@@ -40,12 +43,14 @@ public sealed class ManagerConnectionWindow : Form
         _cookies = cookies;
 
         Text = "Manager · " + displayName;
-        FormBorderStyle = FormBorderStyle.None;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        ControlBox = true;
         MinimizeBox = true;
+        MaximizeBox = true;
         ShowInTaskbar = true;
-        Resize += (_, _) => WebShellBridge.ApplyShape(this);
+        ResizeEnd += (_, _) => _main.SaveWindowStateFor(this, WindowStateKey);
 
-        var palette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
+        var palette = ThemeHelper.GetPalette(true);
         BackColor = palette.WindowBack;
         ForeColor = palette.Text;
         _web.DefaultBackgroundColor = palette.WindowBack;
@@ -55,6 +60,7 @@ public sealed class ManagerConnectionWindow : Form
         Height = Math.Max(760, (int)(wa.Height * 0.88));
         MinimumSize = new Size(980, 680);
         StartPosition = FormStartPosition.CenterScreen;
+        _main.RestoreWindowStateFor(this, WindowStateKey);
         Icon = MainForm.LoadAppIconShared();
         KeyPreview = true;
 
@@ -72,15 +78,22 @@ public sealed class ManagerConnectionWindow : Form
             _loadingText.Height = 36;
         };
         Controls.Add(_loadingOverlay);
-        WebShellBridge.InstallResizeGrips(this);
+        _captionChrome = NativeCaptionChrome.Attach(this, Icon);
+        _captionChrome.AddButton("设置", _main.ShowSettingsFromChild);
+        _captionChrome.AddButton("Manager", () => _ = _main.ShowManagerFromChildAsync());
+        _captionChrome.AddMenuButton("工具",
+            new CaptionMenuItem("日志", _main.ShowLogsFromChild),
+            new CaptionMenuItem("插件管理", _main.ShowPluginsFromChild),
+            new CaptionMenuItem("重启 dsh", () => MessageBox.Show(this, "请在 dsh-manager 面板中执行远程实例重启。", "Manager 远程实例", MessageBoxButtons.OK, MessageBoxIcon.Information)));
+        _captionChrome.AddButton("关于", _main.ShowAboutFromChild);
 
-        FormClosing += (_, _) => _quitting = true;
+        FormClosing += (_, _) => { _main.SaveWindowStateFor(this, WindowStateKey); _quitting = true; };
     }
 
     protected override async void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        ThemeHelper.ApplyWindowTheme(Handle, ThemeHelper.IsSystemDarkMode());
+        ThemeHelper.ApplyWindowTheme(Handle, true);
         ShowLoading("正在打开 manager 远程 dsh…");
         try
         {
@@ -108,7 +121,9 @@ public sealed class ManagerConnectionWindow : Form
         cwv.Settings.AreDefaultContextMenusEnabled = true;
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
-        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.Script);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.NativeChromeGuardScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.HostBridgeScript);
+        await cwv.AddScriptToExecuteOnDocumentCreatedAsync(WebShell.NativeThemeScript);
 
         foreach (var source in _cookies)
         {
@@ -128,6 +143,7 @@ public sealed class ManagerConnectionWindow : Form
         cwv.WebMessageReceived += (_, e) =>
         {
             var raw = e.TryGetWebMessageAsString();
+            if (_captionChrome?.TryApplyThemeMessage(raw) == true) return;
             if (BrowserNotificationBridge.TryParse(raw, out var notice))
             {
                 _main.ShowSystemNotification(notice.Title, notice.Body, () => SafeUi(() => { Show(); Activate(); }), notice.RequireInteraction);
@@ -162,12 +178,6 @@ public sealed class ManagerConnectionWindow : Form
             {
                 var displayTitle = WebShellBridge.FormatSessionTitle("Manager · " + _displayName + " · " + title);
                 Text = displayTitle;
-                try
-                {
-                    var encoded = System.Text.Json.JsonSerializer.Serialize(displayTitle);
-                    _ = cwv.ExecuteScriptAsync($"window.__dshLauncherSetTitle && window.__dshLauncherSetTitle({encoded})");
-                }
-                catch { }
             });
         };
         cwv.NavigationCompleted += (_, e) =>
@@ -233,6 +243,12 @@ public sealed class ManagerConnectionWindow : Form
     }
 
     internal void SetWorkAreaMaximizedBounds(Rectangle bounds) => MaximizedBounds = bounds;
+
+    protected override void WndProc(ref Message m)
+    {
+        if (_captionChrome?.TryHandleWindowMessage(ref m) == true) return;
+        base.WndProc(ref m);
+    }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {

@@ -1,38 +1,104 @@
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace DshLauncher;
 
-/// <summary>托盘右键菜单的 WinUI 3 风格渲染器：背景/悬停/分隔线/文字全部跟随系统主题色。</summary>
+/// <summary>WinUI 3 风格菜单渲染器：留白、圆角、悬停层级和文字跟随当前页面调色板。</summary>
 public sealed class ThemeToolStripRenderer : ToolStripProfessionalRenderer
 {
-    public ThemeToolStripRenderer() : base(new ThemeColorTable()) { }
+    private readonly ThemeHelper.Palette _palette;
 
-    private sealed class ThemeColorTable : ProfessionalColorTable
+    public ThemeToolStripRenderer(ThemeHelper.Palette? palette = null)
+        : base(new ThemeColorTable(palette ?? ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode())))
     {
-        private static ThemeHelper.Palette P => ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
+        _palette = palette ?? ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
+    }
 
-        public override Color ToolStripDropDownBackground => P.SurfaceAlt;
-        public override Color ImageMarginGradientBegin => P.SurfaceAlt;
-        public override Color ImageMarginGradientMiddle => P.SurfaceAlt;
-        public override Color ImageMarginGradientEnd => P.SurfaceAlt;
-        public override Color MenuBorder => P.Border;
-        public override Color MenuItemBorder => P.Border;
-        public override Color MenuItemSelected => P.Surface;
-        public override Color MenuItemSelectedGradientBegin => ThemeHelper.Lighten(P.Surface);
-        public override Color MenuItemSelectedGradientEnd => ThemeHelper.Lighten(P.Surface);
-        public override Color MenuItemPressedGradientBegin => P.Surface;
-        public override Color MenuItemPressedGradientMiddle => P.Surface;
-        public override Color MenuItemPressedGradientEnd => P.Surface;
-        public override Color SeparatorDark => P.Border;
-        public override Color SeparatorLight => P.Border;
-        public override Color CheckBackground => P.Accent;
-        public override Color CheckSelectedBackground => P.Accent;
+    protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+    {
+        var width = e.ToolStrip.ClientSize.Width;
+        var height = e.ToolStrip.ClientSize.Height;
+        if (width <= 1 || height <= 1) return;
+
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = RoundedPath(new Rectangle(0, 0, width - 1, height - 1), 9);
+        using var brush = new SolidBrush(_palette.SurfaceAlt);
+        e.Graphics.FillPath(brush, path);
+    }
+
+    protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+    {
+        var width = e.ToolStrip.ClientSize.Width;
+        var height = e.ToolStrip.ClientSize.Height;
+        if (width <= 1 || height <= 1) return;
+
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = RoundedPath(new Rectangle(0, 0, width - 1, height - 1), 9);
+        using var pen = new Pen(_palette.Border);
+        e.Graphics.DrawPath(pen, path);
+    }
+
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        if (!e.Item.Enabled || !e.Item.Selected) return;
+        var bounds = e.Item.Bounds;
+        bounds.Inflate(-1, -1);
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = RoundedPath(bounds, 6);
+        using var brush = new SolidBrush(_palette.Surface);
+        e.Graphics.FillPath(brush, path);
+    }
+
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        var bounds = e.Item.Bounds;
+        var y = bounds.Top + bounds.Height / 2;
+        using var pen = new Pen(_palette.Border);
+        e.Graphics.DrawLine(pen, bounds.Left + 8, y, bounds.Right - 8, y);
     }
 
     protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
     {
-        e.TextColor = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode()).Text;
+        e.TextColor = _palette.Text;
         base.OnRenderItemText(e);
+    }
+
+    private static GraphicsPath RoundedPath(Rectangle bounds, int radius)
+    {
+        var path = new GraphicsPath();
+        var diameter = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
+        path.AddArc(bounds.X, bounds.Y, diameter, diameter, 180, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Y, diameter, diameter, 270, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(bounds.X, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    private sealed class ThemeColorTable : ProfessionalColorTable
+    {
+        private readonly ThemeHelper.Palette _p;
+
+        public ThemeColorTable(ThemeHelper.Palette palette) => _p = palette;
+
+        public override Color ToolStripDropDownBackground => _p.SurfaceAlt;
+        public override Color ImageMarginGradientBegin => _p.SurfaceAlt;
+        public override Color ImageMarginGradientMiddle => _p.SurfaceAlt;
+        public override Color ImageMarginGradientEnd => _p.SurfaceAlt;
+        public override Color MenuBorder => _p.Border;
+        public override Color MenuItemBorder => _p.Border;
+        public override Color MenuItemSelected => _p.Surface;
+        public override Color MenuItemSelectedGradientBegin => _p.Surface;
+        public override Color MenuItemSelectedGradientEnd => _p.Surface;
+        public override Color MenuItemPressedGradientBegin => _p.Surface;
+        public override Color MenuItemPressedGradientMiddle => _p.Surface;
+        public override Color MenuItemPressedGradientEnd => _p.Surface;
+        public override Color SeparatorDark => _p.Border;
+        public override Color SeparatorLight => _p.Border;
+        public override Color CheckBackground => _p.Accent;
+        public override Color CheckSelectedBackground => _p.Accent;
     }
 }

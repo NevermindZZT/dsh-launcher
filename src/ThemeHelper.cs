@@ -50,6 +50,24 @@ public static class ThemeHelper
         try { DwmSetWindowAttribute(hwnd, DwmwaSystemBackdropType, ref value, sizeof(int)); } catch { }
     }
 
+    /// <summary>将 dsh 页面主题同步到原生 DWM 标题栏。</summary>
+    public static void ApplyTitleBarPalette(IntPtr hwnd, Palette palette)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        var dark = palette.WindowBack.GetBrightness() < 0.55f;
+        ApplyTitleBarTheme(hwnd, dark);
+        try
+        {
+            var caption = ToColorRef(palette.WindowBack);
+            var text = ToColorRef(palette.Text);
+            DwmSetWindowAttribute(hwnd, 35, ref caption, sizeof(int)); // DWMWA_CAPTION_COLOR
+            DwmSetWindowAttribute(hwnd, 36, ref text, sizeof(int));    // DWMWA_TEXT_COLOR
+        }
+        catch { }
+    }
+
+    private static int ToColorRef(Color color) => color.R | (color.G << 8) | (color.B << 16);
+
     /// <summary>子窗口完整主题：标题栏配色 + Mica 材质。</summary>
     public static void ApplyWindowTheme(IntPtr hwnd, bool dark)
     {

@@ -26,14 +26,11 @@
   </ItemGroup>
 
   <!-- The launcher uses WebView2 WinForms only; exclude the package transitive WPF assembly to avoid WindowsBase conflicts. -->
-  <ItemGroup>
-    <Reference Remove="Microsoft.Web.WebView2.Wpf" />
-  </ItemGroup>
-
   <Target Name="RemoveWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">
     <ItemGroup>
-      <Reference Remove="Microsoft.Web.WebView2.Wpf" />
-      <ReferencePath Remove="**\Microsoft.Web.WebView2.Wpf.dll" />
+      <!-- Microsoft.Web.WebView2.Common.targets adds Wpf.dll even for WinForms projects. Remove the full-path item before resolution. -->
+      <Reference Remove="@(Reference)" Condition="$([System.String]::Copy('%(Reference.Identity)').EndsWith('Microsoft.Web.WebView2.Wpf.dll'))" />
+      <ReferencePath Remove="@(ReferencePath)" Condition="$([System.String]::Copy('%(ReferencePath.Identity)').EndsWith('Microsoft.Web.WebView2.Wpf.dll'))" />
     </ItemGroup>
   </Target>
 

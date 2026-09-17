@@ -19,6 +19,8 @@ public sealed class AppSettings
     public bool HandleAgentQuestions { get; set; } = true;
     /// <summary>true = Launcher intercepts dsh native file/directory pickers and uses its standalone cross-platform picker.</summary>
     public bool InterceptNativeFilePicker { get; set; } = true;
+    /// <summary>每个本地/SSH dsh 实例最近一次的窗口尺寸与最大化状态。</summary>
+    public System.Collections.Generic.Dictionary<string, WindowStateSettings> WindowStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>SSH 连接配置列表（多主机；本地连接始终存在，SSH 按 AutoConnect 并行连接）。</summary>
     public System.Collections.Generic.List<SshConnectionConfig> SshConnections { get; set; } = new();
@@ -40,6 +42,7 @@ public sealed class AppSettings
                     s.Manager ??= new ManagerSettings();
                     s.ManagerFrontend ??= new ManagerFrontendSettings();
                     s.SshConnections ??= new();
+                    s.WindowStates ??= new(StringComparer.OrdinalIgnoreCase);
                     return s;
                 }
             }
@@ -87,4 +90,12 @@ public sealed class AppSettings
             // 写入失败提示即可
         }
     }
+}
+
+/// <summary>一个 dsh 实例的 Launcher 窗口显示状态。</summary>
+public sealed class WindowStateSettings
+{
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public bool Maximized { get; set; }
 }

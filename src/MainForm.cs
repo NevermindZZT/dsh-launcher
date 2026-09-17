@@ -91,6 +91,7 @@ public sealed class MainForm : Form
         MinimizeBox = true;
         // 无边框窗口仍保留最小化系统样式，确保任务栏点击可最小化。
         Resize += (_, _) => WebShellBridge.ApplyShape(this);
+        ResizeEnd += (_, _) => SaveWindowStateFor(this, ConnectionManager.IdOf(_current));
         // 在窗口句柄/主题初始化前就设置深色背景，避免冷启动首帧出现白条
         var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
         BackColor = initialPalette.WindowBack;
@@ -102,6 +103,7 @@ public sealed class MainForm : Form
         Height = Math.Max(800, (int)(wa.Height * 0.92));
         MinimumSize = new Size(1100, 720);
         StartPosition = FormStartPosition.CenterScreen;
+        RestoreWindowStateFor(this, ConnectionManager.IdOf(_current));
         Icon = LoadAppIcon();
         KeyPreview = true;
 
@@ -585,6 +587,39 @@ public sealed class MainForm : Form
     /// Ctrl+Shift+R 重启 / Ctrl+Shift+L 日志 / Ctrl+Shift+P 插件 / Ctrl+Shift+S 设置 / Ctrl+Shift+Q 退出 / Ctrl+Shift+C 连接切换（SSH 模式）。
     /// </summary>
     internal void SetWorkAreaMaximizedBounds(Rectangle bounds) => MaximizedBounds = bounds;
+
+    internal void RestoreWindowStateFor(Form form, string instanceKey)
+    {
+        if (!_settings.WindowStates.TryGetValue(instanceKey, out var saved) || saved.Width <= 0 || saved.Height <= 0) return;
+        var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+        var minWidth = Math.Max(640, form.MinimumSize.Width);
+        var minHeight = Math.Max(480, form.MinimumSize.Height);
+        var width = Math.Clamp(saved.Width, minWidth, Math.Max(minWidth, area.Width - 32));
+        var height = Math.Clamp(saved.Height, minHeight, Math.Max(minHeight, area.Height - 32));
+        form.StartPosition = FormStartPosition.Manual;
+        form.Size = new Size(width, height);
+        form.Location = new Point(area.Left + Math.Max(0, (area.Width - width) / 2), area.Top + Math.Max(0, (area.Height - height) / 2));
+        if (saved.Maximized)
+        {
+            if (form is MainForm main) main.SetWorkAreaMaximizedBounds(area);
+            else if (form is ConnectionWindow remote) remote.SetWorkAreaMaximizedBounds(area);
+            form.WindowState = FormWindowState.Maximized;
+        }
+    }
+
+    internal void SaveWindowStateFor(Form form, string instanceKey)
+    {
+        if (form.IsDisposed || form.WindowState == FormWindowState.Minimized && form.RestoreBounds.Width <= 0) return;
+        var bounds = form.WindowState == FormWindowState.Normal ? form.Bounds : form.RestoreBounds;
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+        _settings.WindowStates[instanceKey] = new WindowStateSettings
+        {
+            Width = bounds.Width,
+            Height = bounds.Height,
+            Maximized = form.WindowState == FormWindowState.Maximized,
+        };
+        _settings.Save();
+    }
 
     protected override CreateParams CreateParams
     {
@@ -1486,6 +1521,7 @@ public sealed class MainForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
+        if (!_quitting) SaveWindowStateFor(this, ConnectionManager.IdOf(_current));
         if (_quitting)
         {
             // The second close pass is raised by OnQuit after asynchronous cleanup.

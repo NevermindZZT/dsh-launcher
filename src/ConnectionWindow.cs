@@ -37,6 +37,7 @@ public sealed class ConnectionWindow : Form
         MinimizeBox = true;
         ShowInTaskbar = true;
         Resize += (_, _) => WebShellBridge.ApplyShape(this);
+        ResizeEnd += (_, _) => _main.SaveWindowStateFor(this, ConnectionManager.IdOf(_conn));
         // 远程窗口首帧直接使用系统深色背景，避免冷启动白闪
         var initialPalette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
         BackColor = initialPalette.WindowBack;
@@ -47,6 +48,7 @@ public sealed class ConnectionWindow : Form
         Height = Math.Max(760, (int)(wa.Height * 0.88));
         MinimumSize = new Size(980, 680);
         StartPosition = FormStartPosition.CenterScreen;
+        _main.RestoreWindowStateFor(this, ConnectionManager.IdOf(_conn));
         Icon = MainForm.LoadAppIconShared();
         KeyPreview = true;
 
@@ -69,6 +71,7 @@ public sealed class ConnectionWindow : Form
 
         FormClosing += (_, _) =>
         {
+            _main.SaveWindowStateFor(this, ConnectionManager.IdOf(_conn));
             if (_quitting) return;
             _quitting = true;
             try { _conn.StopAsync().GetAwaiter().GetResult(); } catch { }

@@ -14,6 +14,7 @@ internal sealed class LauncherModalWindow : Form
     private bool _closing;
     private string _page = "about";
     private object? _data;
+    private ThemeHelper.Palette _palette = ThemeHelper.CurrentPagePalette;
 
     public event Action<string>? BrowserMessage;
 
@@ -23,12 +24,13 @@ internal sealed class LauncherModalWindow : Form
         Text = "DshLauncher";
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
-        BackColor = Color.FromArgb(0x20, 0x20, 0x20);
+        BackColor = _palette.WindowBack;
         _web.BackColor = BackColor;
         _web.DefaultBackgroundColor = BackColor;
         Controls.Add(_web);
         ApplyPageSize("about");
         FormClosing += (_, _) => _closing = true;
+        FormClosed += (_, _) => ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
         Shown += async (_, _) => { CenterInWorkArea(); await InitializeAsync(); };
     }
 
@@ -45,8 +47,39 @@ internal sealed class LauncherModalWindow : Form
     {
         base.OnHandleCreated(e);
         // Launcher surfaces intentionally follow dsh's dark theme rather than the system title-bar theme.
-        ThemeHelper.ApplyWindowTheme(Handle, true);
+        ThemeHelper.PagePaletteChanged += OnPagePaletteChanged;
+        ApplyWindowPalette(_palette);
     }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
+        base.OnHandleDestroyed(e);
+    }
+
+    private void OnPagePaletteChanged(ThemeHelper.Palette palette)
+    {
+        _palette = palette;
+        if (IsDisposed) return;
+        if (InvokeRequired) BeginInvoke(() => ApplyWindowPalette(palette));
+        else ApplyWindowPalette(palette);
+    }
+
+    private void ApplyWindowPalette(ThemeHelper.Palette palette)
+    {
+        _palette = palette;
+        BackColor = palette.WindowBack;
+        _web.BackColor = palette.WindowBack;
+        _web.DefaultBackgroundColor = palette.WindowBack;
+        if (IsHandleCreated)
+        {
+            ThemeHelper.ApplyWindowTheme(Handle, palette.WindowBack.GetBrightness() < 0.55f);
+            ThemeHelper.ApplyTitleBarPalette(Handle, palette);
+        }
+        WebThemeBridge.Apply(_web, _palette);
+    }
+
+    private void ApplyWebPalette() => WebThemeBridge.Apply(_web, _palette);
 
     private void ApplyPageSize(string page)
     {
@@ -88,7 +121,7 @@ internal sealed class LauncherModalWindow : Form
             core.Settings.IsStatusBarEnabled = false;
             core.WebMessageReceived += (_, e) => HandleWebMessage(e.TryGetWebMessageAsString());
             await WebModalRouter.Install(_web);
-            core.NavigationCompleted += (_, _) => { _ready = true; Render(); };
+            core.NavigationCompleted += (_, _) => { _ready = true; Render(); ApplyWebPalette(); };
             core.NavigateToString(Document);
         }
         catch (Exception ex)
@@ -124,6 +157,7 @@ internal sealed class LauncherModalWindow : Form
         if (_web.CoreWebView2 == null || _closing) return;
         if (_data == null) WebModalRouter.Open(_web, _settings, _page);
         else WebModalRouter.Open(_web, _page, _data);
+        ApplyWebPalette();
     }
 
     private const string Document = """

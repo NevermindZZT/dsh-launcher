@@ -41,7 +41,7 @@ public sealed class ThemeToolStripRenderer : ToolStripProfessionalRenderer
 
     protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
     {
-        if (!e.Item.Enabled || !e.Item.Selected) return;
+        if (!e.Item.Enabled || (!e.Item.Selected && e.Item.Tag is not true)) return;
         var bounds = e.Item.Bounds;
         bounds.Inflate(-1, -1);
         if (bounds.Width <= 0 || bounds.Height <= 0) return;

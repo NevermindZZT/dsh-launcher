@@ -12,6 +12,7 @@ internal sealed class DshInteractionWebOverlayForm : Form
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
     private bool _settled;
     private bool _submitting;
+    private ThemeHelper.Palette _palette = ThemeHelper.CurrentPagePalette;
 
     public event Func<DshInteractionDecision, Task>? DecisionSelected;
 
@@ -38,13 +39,13 @@ internal sealed class DshInteractionWebOverlayForm : Form
             ? Math.Min(maximumHeight, 400)
             : Math.Min(maximumHeight, EstimateQuestionHeight(interaction));
         PositionAtBottomRight();
-        var palette = ThemeHelper.GetPalette(ThemeHelper.IsSystemDarkMode());
-        BackColor = palette.WindowBack;
-        ForeColor = palette.Text;
-        _web.DefaultBackgroundColor = palette.WindowBack;
+        BackColor = _palette.WindowBack;
+        ForeColor = _palette.Text;
+        _web.DefaultBackgroundColor = _palette.WindowBack;
         Controls.Add(_web);
         Load += (_, _) => PositionAtBottomRight();
         Shown += async (_, _) => await InitializeAsync();
+        FormClosed += (_, _) => ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
         FormClosing += (_, e) =>
         {
             if (_settled) return;
@@ -67,8 +68,39 @@ internal sealed class DshInteractionWebOverlayForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        ThemeHelper.ApplyWindowTheme(Handle, ThemeHelper.IsSystemDarkMode());
+        ThemeHelper.PagePaletteChanged += OnPagePaletteChanged;
+        ApplyWindowPalette(_palette);
     }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
+        base.OnHandleDestroyed(e);
+    }
+
+    private void OnPagePaletteChanged(ThemeHelper.Palette palette)
+    {
+        _palette = palette;
+        if (IsDisposed) return;
+        if (InvokeRequired) BeginInvoke(() => ApplyWindowPalette(palette));
+        else ApplyWindowPalette(palette);
+    }
+
+    private void ApplyWindowPalette(ThemeHelper.Palette palette)
+    {
+        _palette = palette;
+        BackColor = palette.WindowBack;
+        ForeColor = palette.Text;
+        _web.DefaultBackgroundColor = palette.WindowBack;
+        if (IsHandleCreated)
+        {
+            ThemeHelper.ApplyWindowTheme(Handle, palette.WindowBack.GetBrightness() < 0.55f);
+            ThemeHelper.ApplyTitleBarPalette(Handle, palette);
+        }
+        WebThemeBridge.Apply(_web, _palette);
+    }
+
+    private void ApplyWebPalette() => WebThemeBridge.Apply(_web, _palette);
 
     private static int EstimateQuestionHeight(DshPendingInteraction interaction)
     {
@@ -95,6 +127,7 @@ internal sealed class DshInteractionWebOverlayForm : Form
             core.Settings.AreDevToolsEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
             core.WebMessageReceived += (_, message) => HandleWebMessage(message.TryGetWebMessageAsString());
+            core.NavigationCompleted += (_, _) => ApplyWebPalette();
             core.NavigateToString(BuildDocument());
         }
         catch (Exception ex)

@@ -15,6 +15,7 @@ internal sealed class WorkspacePickerWindow : Form
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
     private string _current;
     private bool _closing;
+    private ThemeHelper.Palette _palette = ThemeHelper.CurrentPagePalette;
     public event Action<string>? PathConfirmed;
 
     public WorkspacePickerWindow(string title, string initialPath, bool isPosix, Func<string, List<Entry>> list)
@@ -29,15 +30,51 @@ internal sealed class WorkspacePickerWindow : Form
         MaximumSize = new Size(Math.Max(760, area.Width - 32), Math.Max(560, area.Height - 32));
         Size = new Size(Math.Min(1040, MaximumSize.Width), Math.Min(760, MaximumSize.Height));
         Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
-        BackColor = Color.FromArgb(0x20, 0x20, 0x20);
+        BackColor = _palette.WindowBack;
         _web.BackColor = BackColor;
         _web.DefaultBackgroundColor = BackColor;
         Controls.Add(_web);
         FormClosing += (_, _) => _closing = true;
+        FormClosed += (_, _) => ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
         Shown += async (_, _) => await InitializeAsync();
     }
 
-    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); ThemeHelper.ApplyWindowTheme(Handle, true); }
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ThemeHelper.PagePaletteChanged += OnPagePaletteChanged;
+        ApplyWindowPalette(_palette);
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
+        base.OnHandleDestroyed(e);
+    }
+
+    private void OnPagePaletteChanged(ThemeHelper.Palette palette)
+    {
+        _palette = palette;
+        if (IsDisposed) return;
+        if (InvokeRequired) BeginInvoke(() => ApplyWindowPalette(palette));
+        else ApplyWindowPalette(palette);
+    }
+
+    private void ApplyWindowPalette(ThemeHelper.Palette palette)
+    {
+        _palette = palette;
+        BackColor = palette.WindowBack;
+        _web.BackColor = palette.WindowBack;
+        _web.DefaultBackgroundColor = palette.WindowBack;
+        if (IsHandleCreated)
+        {
+            ThemeHelper.ApplyWindowTheme(Handle, palette.WindowBack.GetBrightness() < 0.55f);
+            ThemeHelper.ApplyTitleBarPalette(Handle, palette);
+        }
+        WebThemeBridge.Apply(_web, _palette);
+    }
+
+    private void ApplyWebPalette() => WebThemeBridge.Apply(_web, _palette);
 
     private async Task InitializeAsync()
     {
@@ -51,6 +88,7 @@ internal sealed class WorkspacePickerWindow : Form
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.AreDevToolsEnabled = false;
             core.WebMessageReceived += (_, e) => HandleMessage(e.TryGetWebMessageAsString());
+            core.NavigationCompleted += (_, _) => ApplyWebPalette();
             await RenderAsync();
         }
         catch (Exception ex) { if (!_closing) MessageBox.Show(this, ex.Message, "文件选择器初始化失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }

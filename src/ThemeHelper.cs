@@ -12,6 +12,23 @@ public static class ThemeHelper
     private const int BackdropMica = 2;
     private const int BackdropMicaAlt = 4;
 
+    private static Palette _pagePalette = GetPalette(true);
+    private static bool _hasPagePalette;
+
+    public static Palette CurrentPagePalette => _hasPagePalette ? _pagePalette : GetPalette(true);
+    public static event Action<Palette>? PagePaletteChanged;
+
+    public static void SetPagePalette(Palette palette)
+    {
+        if (_hasPagePalette && _pagePalette.Equals(palette)) return;
+        _pagePalette = palette;
+        _hasPagePalette = true;
+        foreach (var handler in PagePaletteChanged?.GetInvocationList() ?? Array.Empty<Delegate>())
+        {
+            try { ((Action<Palette>)handler)(palette); } catch { }
+        }
+    }
+
     /// <summary>系统当前是否为深色模式（AppsUseLightTheme=0）。</summary>
     public static bool IsSystemDarkMode()
     {
@@ -164,6 +181,12 @@ public static class ThemeHelper
     public static Color Darken(Color c, int amount = 14)
     {
         return Color.FromArgb(Math.Max(0, c.R - amount), Math.Max(0, c.G - amount), Math.Max(0, c.B - amount));
+    }
+
+    public static Color ContrastingText(Color background)
+    {
+        var luminance = (background.R * 299 + background.G * 587 + background.B * 114) / 1000;
+        return luminance >= 160 ? Color.FromArgb(0x16, 0x1B, 0x24) : Color.White;
     }
 
     [DllImport("dwmapi.dll")]

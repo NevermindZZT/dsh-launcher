@@ -33,20 +33,29 @@ public abstract class ThemedForm : Form
         return new Font("Segoe UI", 10f);
     }
 
-    protected bool IsDark => ThemeHelper.IsSystemDarkMode();
-    protected ThemeHelper.Palette Palette => ThemeHelper.GetPalette(IsDark);
+    protected bool IsDark => Palette.WindowBack.GetBrightness() < 0.55f;
+    protected ThemeHelper.Palette Palette => ThemeHelper.CurrentPagePalette;
 
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
         ApplyThemeNow();
+        ThemeHelper.PagePaletteChanged += OnPagePaletteChanged;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         base.OnHandleDestroyed(e);
+    }
+
+    private void OnPagePaletteChanged(ThemeHelper.Palette _)
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired) BeginInvoke(ApplyThemeNow);
+        else ApplyThemeNow();
     }
 
     private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
@@ -63,8 +72,9 @@ public abstract class ThemedForm : Form
     public void ApplyThemeNow()
     {
         if (!IsHandleCreated) return;
-        ThemeHelper.ApplyWindowTheme(Handle, IsDark);
         var p = Palette;
+        ThemeHelper.ApplyWindowTheme(Handle, IsDark);
+        ThemeHelper.ApplyTitleBarPalette(Handle, p);
         BackColor = p.WindowBack;
         ForeColor = p.Text;
         ApplyPalette(p);

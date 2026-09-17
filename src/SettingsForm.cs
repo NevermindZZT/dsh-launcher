@@ -16,6 +16,7 @@ public sealed class SettingsForm : Form
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
     private SettingsDraft? _draft;
     private bool _closing;
+    private ThemeHelper.Palette _palette = ThemeHelper.CurrentPagePalette;
 
     public SettingsForm(AppSettings settings)
     {
@@ -30,11 +31,12 @@ public sealed class SettingsForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         ShowInTaskbar = true;
         // WebView2 displays this color before its first document paints. Keep it aligned with dsh's dark surface.
-        BackColor = Color.FromArgb(0x20, 0x20, 0x20);
+        BackColor = _palette.WindowBack;
         _web.BackColor = BackColor;
         _web.DefaultBackgroundColor = BackColor;
         Controls.Add(_web);
         FormClosing += (_, _) => _closing = true;
+        FormClosed += (_, _) => ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
         Shown += async (_, _) => { CenterInWorkArea(); await InitializeAsync(); };
     }
 
@@ -47,8 +49,8 @@ public sealed class SettingsForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        ThemeHelper.ApplyWindowTheme(Handle, true);
-        _web.DefaultBackgroundColor = Color.FromArgb(0x20, 0x20, 0x20);
+        ThemeHelper.PagePaletteChanged += OnPagePaletteChanged;
+        ApplyWindowPalette(_palette);
     }
 
     private async Task InitializeAsync()
@@ -65,6 +67,7 @@ public sealed class SettingsForm : Form
             core.Settings.AreDevToolsEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
             core.WebMessageReceived += (_, message) => HandleWebMessage(message.TryGetWebMessageAsString());
+            core.NavigationCompleted += (_, _) => ApplyWebPalette();
             core.NavigateToString(BuildDocument());
         }
         catch (Exception ex)
@@ -74,6 +77,36 @@ public sealed class SettingsForm : Form
             Close();
         }
     }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
+        base.OnHandleDestroyed(e);
+    }
+
+    private void OnPagePaletteChanged(ThemeHelper.Palette palette)
+    {
+        _palette = palette;
+        if (IsDisposed) return;
+        if (InvokeRequired) BeginInvoke(() => ApplyWindowPalette(palette));
+        else ApplyWindowPalette(palette);
+    }
+
+    private void ApplyWindowPalette(ThemeHelper.Palette palette)
+    {
+        _palette = palette;
+        BackColor = palette.WindowBack;
+        _web.BackColor = palette.WindowBack;
+        _web.DefaultBackgroundColor = palette.WindowBack;
+        if (IsHandleCreated)
+        {
+            ThemeHelper.ApplyWindowTheme(Handle, palette.WindowBack.GetBrightness() < 0.55f);
+            ThemeHelper.ApplyTitleBarPalette(Handle, palette);
+        }
+        WebThemeBridge.Apply(_web, _palette);
+    }
+
+    private void ApplyWebPalette() => WebThemeBridge.Apply(_web, _palette);
 
     /// <summary>由 MainForm 在 DialogResult.OK 后调用，保持既有的保存和应用顺序。</summary>
     public void Apply()

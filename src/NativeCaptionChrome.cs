@@ -10,10 +10,10 @@ internal sealed record CaptionMenuItem(string Text, Action Action);
 
 /// <summary>
 /// Native title-bar integration. The standard Windows non-client frame owns
-/// drag/resize/Snap behavior; commands are available from the title bar's
-/// right-click menu so no second client-area row consumes WebView space.
+/// drag/resize/Snap behavior; commands use a dedicated WinForms popup so hover
+/// state is reliable instead of depending on ToolStrip selection messages.
 /// </summary>
-internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
+internal sealed class NativeCaptionChrome : IDisposable
 {
     private const int WmNcRButtonUp = 0x00A5;
     private const int WmContextMenu = 0x007B;
@@ -23,30 +23,18 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
     private const int ScMouseMenu = 0xF090;
 
     private readonly Form _form;
-    private readonly ContextMenuStrip _menu;
+    private readonly List<MenuEntry> _entries = new();
     private readonly List<NativeCommand> _nativeCommands = new();
     private int _nextNativeCommand = 0x1F00;
     private ThemeHelper.Palette _palette;
     private bool _pagePaletteApplied;
-    private bool _dismissFilterInstalled;
+    private NativeCaptionMenuWindow? _popup;
     private bool _disposed;
 
     private NativeCaptionChrome(Form form, Icon? icon)
     {
         _form = form;
         _palette = ThemeHelper.GetPalette(true);
-        _menu = new ContextMenuStrip
-        {
-            ShowImageMargin = false,
-            ShowCheckMargin = false,
-            AutoClose = true,
-            Padding = new Padding(6),
-            Font = new Font("Segoe UI", 9.5f),
-        };
-        ConfigureDropDown(_menu);
-        _menu.Opening += (_, _) => ApplyMenuPalette();
-        _menu.Closed += (_, _) => RemoveDismissFilter();
-
         form.HandleCreated += (_, _) =>
         {
             ApplySystemFallbackPalette();
@@ -58,52 +46,29 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
 
     public static NativeCaptionChrome Attach(Form form, Icon? icon = null) => new(form, icon);
 
-    /// <summary>Add a top-level command to the title-bar context menu.</summary>
     public void AddButton(string text, Action action)
     {
         if (_disposed) return;
-        _menu.Items.Add(CreateMenuItem(text, action));
+        _entries.Add(new MenuEntry(text, action, null, false));
         RegisterNativeCommand(text, action);
     }
 
-    /// <summary>Add a submenu to the title-bar context menu.</summary>
     public void AddMenuButton(string text, params CaptionMenuItem[] items)
     {
         if (_disposed) return;
-        var parent = new ToolStripMenuItem
-        {
-            Text = text,
-            AutoSize = true,
-            Padding = new Padding(12, 7, 12, 7),
-            Margin = new Padding(1),
-            ShowShortcutKeys = false,
-        };
-        ConfigureDropDown(parent.DropDown);
-        foreach (var item in items)
-        {
-            parent.DropDownItems.Add(CreateMenuItem(item.Text, item.Action));
-            RegisterNativeCommand(text + " · " + item.Text, item.Action);
-        }
-        _menu.Items.Add(parent);
+        var copy = items.ToArray();
+        _entries.Add(new MenuEntry(text, null, copy, false));
+        foreach (var item in copy) RegisterNativeCommand(text + " · " + item.Text, item.Action);
     }
 
     public void AddSeparator()
     {
-        if (!_disposed) _menu.Items.Add(new ToolStripSeparator());
+        if (!_disposed) _entries.Add(new MenuEntry(string.Empty, null, null, true));
     }
 
-    /// <summary>
-    /// Called from each native Form.WndProc. Handling this at the Form level is
-    /// intentional: WebView2 and the normal WinForms message subclass do not
-    /// reliably expose every non-client context-menu message.
-    /// </summary>
     internal bool TryHandleWindowMessage(ref Message message)
     {
         if (_disposed) return false;
-
-        if (_menu.Visible && IsPointerDown(message.Msg) && !IsMenuPoint(Cursor.Position))
-            _menu.Close(ToolStripDropDownCloseReason.AppFocusChange);
-
         if (message.Msg == WmNcRButtonUp)
         {
             var hit = unchecked((int)message.WParam.ToInt64());
@@ -111,7 +76,6 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
                 return ShowMenu(PointFromLParam(message.LParam));
             return false;
         }
-
         if (message.Msg == WmContextMenu)
         {
             var point = PointFromLParam(message.LParam);
@@ -119,7 +83,6 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
             if (IsTitleBarPoint(point)) return ShowMenu(point);
             return false;
         }
-
         if (message.Msg == WmSysCommand)
         {
             var command = (int)(message.WParam.ToInt64() & 0xFFF0L);
@@ -130,22 +93,35 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
                 message.Result = IntPtr.Zero;
                 return true;
             }
-
-            // Some Windows versions translate the non-client right click directly
-            // into SC_MOUSEMENU without delivering WM_CONTEXTMENU to WinForms.
             if (command == ScMouseMenu) return ShowMenu(Cursor.Position);
         }
-
         return false;
     }
 
     private bool ShowMenu(Point point)
     {
         if (point.X == -1 && point.Y == -1) point = Cursor.Position;
-        ApplyMenuPalette();
-        _menu.Show(point);
-        InstallDismissFilter();
+        ClosePopup();
+        var popup = new NativeCaptionMenuWindow(this, _form, _palette, _entries);
+        _popup = popup;
+        popup.FormClosed += (_, _) =>
+        {
+            if (ReferenceEquals(_popup, popup)) _popup = null;
+        };
+        popup.ShowAt(point);
         return true;
+    }
+
+    private void ExecuteMenuAction(Action action)
+    {
+        ClosePopup();
+        action();
+    }
+
+    private void ClosePopup()
+    {
+        if (_popup is { IsDisposed: false }) _popup.Close();
+        _popup = null;
     }
 
     private bool IsTitleBarPoint(Point point)
@@ -154,107 +130,6 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
         var clientTopLeft = _form.PointToScreen(Point.Empty);
         return point.X >= _form.Left && point.X < _form.Right
             && point.Y >= _form.Top && point.Y < clientTopLeft.Y;
-    }
-
-    private ToolStripMenuItem CreateMenuItem(string text, Action action)
-    {
-        var item = new ToolStripMenuItem
-        {
-            Text = text,
-            AutoSize = true,
-            Padding = new Padding(12, 7, 12, 7),
-            Margin = new Padding(1),
-            ShowShortcutKeys = false,
-        };
-        item.Click += (_, _) => action();
-        return item;
-    }
-
-    private void ConfigureDropDown(ToolStripDropDown dropDown)
-    {
-        dropDown.AutoSize = true;
-        dropDown.Padding = new Padding(6);
-        if (dropDown is ToolStripDropDownMenu menu)
-        {
-            menu.ShowImageMargin = false;
-            menu.ShowCheckMargin = false;
-        }
-        dropDown.Resize += (_, _) => ApplyDropDownShape(dropDown);
-        dropDown.Opened += (_, _) =>
-        {
-            ApplyDropDownShape(dropDown);
-            InstallDismissFilter();
-        };
-    }
-
-    private static void ApplyDropDownShape(ToolStripDropDown dropDown)
-    {
-        if (dropDown.IsDisposed || dropDown.Width < 4 || dropDown.Height < 4) return;
-        var bounds = new Rectangle(0, 0, dropDown.Width - 1, dropDown.Height - 1);
-        using var path = CreateRoundedPath(bounds, 9);
-        var oldRegion = dropDown.Region;
-        dropDown.Region = new Region(path);
-        oldRegion?.Dispose();
-    }
-
-    private static GraphicsPath CreateRoundedPath(Rectangle bounds, int radius)
-    {
-        var path = new GraphicsPath();
-        var diameter = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
-        path.AddArc(bounds.X, bounds.Y, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Y, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.X, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
-
-    private void InstallDismissFilter()
-    {
-        if (_dismissFilterInstalled || _disposed) return;
-        Application.AddMessageFilter(this);
-        _dismissFilterInstalled = true;
-    }
-
-    private void RemoveDismissFilter()
-    {
-        if (!_dismissFilterInstalled) return;
-        Application.RemoveMessageFilter(this);
-        _dismissFilterInstalled = false;
-    }
-
-    public bool PreFilterMessage(ref Message message)
-    {
-        if (_disposed || !_menu.Visible || !IsPointerDown(message.Msg)) return false;
-        if (!IsMenuPoint(Cursor.Position))
-            _menu.Close(ToolStripDropDownCloseReason.AppFocusChange);
-        return false;
-    }
-
-    private bool IsMenuPoint(Point point)
-    {
-        if (_menu.Visible && _menu.Bounds.Contains(point)) return true;
-        foreach (ToolStripItem item in _menu.Items)
-        {
-            if (item is ToolStripMenuItem menuItem && IsDropDownPoint(menuItem.DropDown, point)) return true;
-        }
-        return false;
-    }
-
-    private static bool IsDropDownPoint(ToolStripDropDown dropDown, Point point)
-    {
-        if (dropDown.Visible && dropDown.Bounds.Contains(point)) return true;
-        foreach (ToolStripItem item in dropDown.Items)
-        {
-            if (item is ToolStripMenuItem menuItem && IsDropDownPoint(menuItem.DropDown, point)) return true;
-        }
-        return false;
-    }
-
-    private static bool IsPointerDown(int message)
-    {
-        return message is 0x0201 or 0x0204 or 0x0207 // client left/right/middle
-            or 0x00A1 or 0x00A4 or 0x00A7;          // non-client left/right/middle
     }
 
     private void RegisterNativeCommand(string text, Action action)
@@ -283,7 +158,6 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
             using var document = JsonDocument.Parse(raw);
             var root = document.RootElement;
             if (!root.TryGetProperty("type", out var type) || type.GetString() != "dsh-theme") return false;
-
             var fallbackDark = root.TryGetProperty("dark", out var darkValue)
                 && darkValue.ValueKind == JsonValueKind.True;
             var fallback = ThemeHelper.GetPalette(fallbackDark);
@@ -294,9 +168,8 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
             var basePalette = ThemeHelper.GetPalette(dark);
             if ((dark && foreground.GetBrightness() < 0.25f) || (!dark && foreground.GetBrightness() > 0.80f))
                 foreground = basePalette.Text;
-
             _pagePaletteApplied = true;
-            ApplyPalette(new ThemeHelper.Palette(
+            var pagePalette = new ThemeHelper.Palette(
                 background,
                 basePalette.Surface,
                 basePalette.SurfaceAlt,
@@ -304,7 +177,9 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
                 basePalette.MutedText,
                 basePalette.Border,
                 accent,
-                ThemeHelper.Lighten(accent)));
+                ThemeHelper.Lighten(accent));
+            ApplyPalette(pagePalette);
+            ThemeHelper.SetPagePalette(pagePalette);
             return true;
         }
         catch
@@ -323,27 +198,8 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
         if (_disposed) return;
         _palette = palette;
         _form.BackColor = palette.WindowBack;
-        ApplyMenuPalette();
+        _popup?.ApplyPalette(palette);
         if (_form.IsHandleCreated) ThemeHelper.ApplyTitleBarPalette(_form.Handle, palette);
-    }
-
-    private void ApplyMenuPalette()
-    {
-        if (_disposed) return;
-        _menu.Renderer = new ThemeToolStripRenderer(_palette);
-        _menu.BackColor = _palette.SurfaceAlt;
-        _menu.ForeColor = _palette.Text;
-        foreach (ToolStripItem item in _menu.Items) ApplyMenuItemPalette(item);
-    }
-
-    private void ApplyMenuItemPalette(ToolStripItem item)
-    {
-        item.BackColor = _palette.SurfaceAlt;
-        item.ForeColor = _palette.Text;
-        if (item is ToolStripMenuItem menuItem)
-        {
-            foreach (ToolStripItem child in menuItem.DropDownItems) ApplyMenuItemPalette(child);
-        }
     }
 
     private static Point PointFromLParam(IntPtr value)
@@ -368,11 +224,9 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
             if (hex.Length == 6 && int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var rgb))
                 return Color.FromArgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
         }
-
         var numbers = Regex.Matches(value, @"\d+(?:\.\d+)?")
             .Select(x => double.TryParse(x.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0d)
-            .Take(3)
-            .ToArray();
+            .Take(3).ToArray();
         if (numbers.Length != 3) return fallback;
         var scale = value.Contains("srgb", StringComparison.OrdinalIgnoreCase) ? 255d : 1d;
         return Color.FromArgb(
@@ -381,19 +235,171 @@ internal sealed class NativeCaptionChrome : IDisposable, IMessageFilter
             (int)Math.Round(Math.Clamp(numbers[2] * scale, 0d, 255d)));
     }
 
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        ClosePopup();
+    }
+
+    private sealed record MenuEntry(string Text, Action? Action, CaptionMenuItem[]? Children, bool Separator);
     private sealed record NativeCommand(int Id, string Text, Action Action);
 
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
-
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern bool AppendMenu(IntPtr hMenu, uint uFlags, UIntPtr uIDNewItem, string lpNewItem);
 
-    public void Dispose()
+    private sealed class NativeCaptionMenuWindow : Form
     {
-        if (_disposed) return;
-        RemoveDismissFilter();
-        _disposed = true;
-        _menu.Dispose();
+        private readonly NativeCaptionChrome _owner;
+        private readonly Form _ownerForm;
+        private readonly FlowLayoutPanel _columns = new()
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Padding = new Padding(6),
+            Margin = new Padding(0),
+        };
+        private readonly IReadOnlyList<MenuEntry> _rootEntries;
+        private ThemeHelper.Palette _palette;
+        private IReadOnlyList<CaptionMenuItem>? _activeSubmenu;
+        private Point _anchor;
+
+        public NativeCaptionMenuWindow(NativeCaptionChrome owner, Form ownerForm, ThemeHelper.Palette palette, IReadOnlyList<MenuEntry> rootEntries)
+        {
+            _owner = owner;
+            _ownerForm = ownerForm;
+            _palette = palette;
+            _rootEntries = rootEntries;
+            FormBorderStyle = FormBorderStyle.None;
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            AutoScaleMode = AutoScaleMode.Dpi;
+            TopMost = true;
+            BackColor = palette.SurfaceAlt;
+            DoubleBuffered = true;
+            Controls.Add(_columns);
+            Deactivate += (_, _) => { if (!IsDisposed) Close(); };
+            Resize += (_, _) => UpdateRegion();
+            RebuildLayout();
+        }
+
+        public void ShowAt(Point point)
+        {
+            _anchor = point;
+            RebuildLayout();
+            var area = Screen.FromPoint(point).WorkingArea;
+            Location = ClampLocation(point, area);
+            Show(_ownerForm);
+            Activate();
+        }
+
+        public void ApplyPalette(ThemeHelper.Palette palette)
+        {
+            _palette = palette;
+            BackColor = palette.SurfaceAlt;
+            RebuildLayout();
+            Invalidate(true);
+        }
+
+        private void RebuildLayout()
+        {
+            _columns.SuspendLayout();
+            _columns.Controls.Clear();
+            var rootWidth = ColumnWidth(_rootEntries);
+            _columns.Controls.Add(CreateColumn(_rootEntries, rootWidth));
+            if (_activeSubmenu is { } submenu)
+            {
+                var separator = new Panel { Width = 6, Height = 1, Margin = new Padding(0), BackColor = Color.Transparent };
+                _columns.Controls.Add(separator);
+                _columns.Controls.Add(CreateColumn(submenu.Select(x => new MenuEntry(x.Text, x.Action, null, false)).ToArray(), ColumnWidth(submenu)));
+            }
+            _columns.ResumeLayout(true);
+            PerformLayout();
+            UpdateRegion();
+            if (IsHandleCreated && Visible) Location = ClampLocation(_anchor, Screen.FromPoint(_anchor).WorkingArea);
+        }
+
+        private FlowLayoutPanel CreateColumn(IReadOnlyList<MenuEntry> entries, int width)
+        {
+            var column = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(0), Padding = new Padding(0) };
+            foreach (var entry in entries)
+            {
+                if (entry.Separator)
+                {
+                    column.Controls.Add(new Panel { Width = width - 12, Height = 1, Margin = new Padding(6, 5, 6, 5), BackColor = _palette.Border });
+                    continue;
+                }
+                var hasChildren = entry.Children is { Length: > 0 };
+                var button = new Button
+                {
+                    Text = hasChildren ? entry.Text + "  ›" : entry.Text,
+                    Width = width,
+                    Height = 36,
+                    AutoSize = false,
+                    FlatStyle = FlatStyle.Flat,
+                    UseVisualStyleBackColor = false,
+                    FlatAppearance = { BorderSize = 0 },
+                    BackColor = _palette.SurfaceAlt,
+                    ForeColor = _palette.Text,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Padding = new Padding(12, 0, 12, 0),
+                    Margin = new Padding(1),
+                    TabStop = false,
+                };
+                var normal = _palette.SurfaceAlt;
+                var hover = _palette.WindowBack.GetBrightness() < 0.55f ? ThemeHelper.Lighten(_palette.Surface, 8) : ThemeHelper.Darken(_palette.Surface, 8);
+                button.MouseEnter += (_, _) => { button.BackColor = hover; button.Invalidate(); };
+                button.MouseLeave += (_, _) => { button.BackColor = normal; button.Invalidate(); };
+                if (hasChildren) button.Click += (_, _) => { _activeSubmenu = entry.Children; RebuildLayout(); };
+                else if (entry.Action != null) button.Click += (_, _) => _owner.ExecuteMenuAction(entry.Action);
+                column.Controls.Add(button);
+            }
+            return column;
+        }
+
+        private int ColumnWidth(IReadOnlyList<MenuEntry> entries)
+        {
+            var max = 0;
+            foreach (var entry in entries)
+            {
+                var text = entry.Text + (entry.Children is { Length: > 0 } ? "  ›" : "");
+                max = Math.Max(max, TextRenderer.MeasureText(text, Font).Width);
+            }
+            return Math.Max(150, max + 32);
+        }
+
+        private int ColumnWidth(IReadOnlyList<CaptionMenuItem> entries) => ColumnWidth(entries.Select(x => new MenuEntry(x.Text, x.Action, null, false)).ToArray());
+
+        private Point ClampLocation(Point point, Rectangle area)
+        {
+            return new Point(Math.Clamp(point.X, area.Left, Math.Max(area.Left, area.Right - Width)), Math.Clamp(point.Y, area.Top, Math.Max(area.Top, area.Bottom - Height)));
+        }
+
+        private void UpdateRegion()
+        {
+            if (Width < 4 || Height < 4) return;
+            using var path = RoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), 9);
+            var old = Region;
+            Region = new Region(path);
+            old?.Dispose();
+        }
+
+        private static GraphicsPath RoundedPath(Rectangle bounds, int radius)
+        {
+            var path = new GraphicsPath();
+            var d = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
+            path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+            path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+            path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
     }
 }

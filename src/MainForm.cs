@@ -1486,22 +1486,25 @@ public sealed class MainForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
-        if (_quitting) return;
-        e.Cancel = true;
-        if (_settings.CloseExits)
+        if (_quitting)
         {
-            _quitting = true;
-            _tray.Visible = false;
-            foreach (var c in _connections.Connections) { try { c.StopAsync().GetAwaiter().GetResult(); } catch { } }
-            try { _managerAgent.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
-            try { _interactions.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
-            Application.Exit();
+            // The second close pass is raised by OnQuit after asynchronous cleanup.
+            e.Cancel = false;
+            return;
         }
-        else
+        if (!_settings.CloseExits)
         {
+            e.Cancel = true;
             Hide();
             // 最小化到托盘保持静默，不发送系统通知。
+            return;
         }
+
+        // Do not block or call Application.Exit inside this first WM_CLOSE pass.
+        // The original close event is otherwise left cancelled and the UI/process can remain alive.
+        e.Cancel = true;
+        if (IsHandleCreated) BeginInvoke(new Action(OnQuit));
+        else _ = OnQuitAsync();
     }
 
     private void ShowMainWindow()
@@ -1514,13 +1517,18 @@ public sealed class MainForm : Form
         });
     }
 
-    private async void OnQuit()
+    private async void OnQuit() => await OnQuitAsync();
+
+    private async Task OnQuitAsync()
     {
+        if (_quitting) return;
         _quitting = true;
         _tray.Visible = false;
         foreach (var c in _connections.Connections) { try { await c.StopAsync(); } catch { } }
         try { await _managerAgent.DisposeAsync(); } catch { }
         try { await _interactions.DisposeAsync(); } catch { }
+        // This runs after the original WM_CLOSE handler has returned, so the
+        // _quitting branch above allows the final close pass to complete.
         Application.Exit();
     }
 

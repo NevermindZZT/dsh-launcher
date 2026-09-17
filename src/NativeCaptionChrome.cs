@@ -34,6 +34,7 @@ internal sealed class NativeCaptionChrome : IDisposable
     private NativeCaptionChrome(Form form, Icon? icon)
     {
         _form = form;
+        LauncherIconTheme.Attach(form);
         _palette = ThemeHelper.GetPalette(true);
         form.HandleCreated += (_, _) =>
         {

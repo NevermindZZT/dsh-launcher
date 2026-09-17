@@ -142,6 +142,7 @@ public sealed class MainForm : Form
             Text = "DeepSeek Harness",
             Visible = true, // 常驻托盘：启动即显示，关闭主窗口只是隐藏
         };
+        ThemeHelper.PagePaletteChanged += OnPagePaletteChanged;
         _notifications = new WindowsNotificationService(_tray);
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("打开主窗口", null, (_, _) => ShowMainWindow());
@@ -215,6 +216,7 @@ public sealed class MainForm : Form
 
         FormClosed += (_, _) =>
         {
+            ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
             _notifications.Dispose();
             try { _managerInteractions?.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
             _managerFrontend.Dispose();
@@ -242,6 +244,24 @@ public sealed class MainForm : Form
     private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
     {
         if (e.Category == UserPreferenceCategory.General) SafeUi(ApplyTheme);
+    }
+
+    private void OnPagePaletteChanged(ThemeHelper.Palette palette)
+    {
+        if (IsDisposed) return;
+        try
+        {
+            if (IsHandleCreated && InvokeRequired)
+            {
+                BeginInvoke(() => OnPagePaletteChanged(palette));
+                return;
+            }
+            LauncherIconTheme.Apply(_tray, palette);
+        }
+        catch
+        {
+            // Theme updates can race with application shutdown.
+        }
     }
 
     private void ApplyTheme()
@@ -1393,19 +1413,7 @@ public sealed class MainForm : Form
     public static Icon LoadAppIconShared() => LoadAppIcon();
 
     /// <summary>从嵌入资源加载应用图标。</summary>
-    private static Icon LoadAppIcon()
-    {
-        try
-        {
-            using var stream = typeof(MainForm).Assembly.GetManifestResourceStream("DshLauncher.app.ico");
-            if (stream != null) return new Icon(stream);
-        }
-        catch
-        {
-            // 资源缺失时回退系统图标
-        }
-        return SystemIcons.Application;
-    }
+    private static Icon LoadAppIcon() => LauncherIconTheme.LoadCurrent();
 
     internal bool HandleBrowserInteraction(IDshConnection connection, string raw, Func<string, string, DshInteractionDecision, Task> reply)
     {

@@ -30,6 +30,7 @@ public sealed class SettingsForm : Form
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
         ShowInTaskbar = true;
+        LauncherIconTheme.Attach(this);
         // WebView2 displays this color before its first document paints. Keep it aligned with dsh's dark surface.
         BackColor = _palette.WindowBack;
         _web.BackColor = BackColor;

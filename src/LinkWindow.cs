@@ -21,7 +21,7 @@ public sealed class LinkWindow : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(720, 480);
         Size = new Size(1200, 800);
-        Icon = MainForm.LoadAppIconShared();
+        LauncherIconTheme.Attach(this);
         _web.Dock = DockStyle.Fill;
         Controls.Add(_web);
         FormClosed += (_, _) => _web.Dispose();

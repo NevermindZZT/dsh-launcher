@@ -26,6 +26,7 @@ internal sealed class DshInteractionWebOverlayForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = true;
+        LauncherIconTheme.Attach(this);
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;

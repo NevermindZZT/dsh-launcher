@@ -30,6 +30,7 @@ internal sealed class WorkspacePickerWindow : Form
         MaximumSize = new Size(Math.Max(760, area.Width - 32), Math.Max(560, area.Height - 32));
         Size = new Size(Math.Min(1040, MaximumSize.Width), Math.Min(760, MaximumSize.Height));
         Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
+        LauncherIconTheme.Attach(this);
         BackColor = _palette.WindowBack;
         _web.BackColor = BackColor;
         _web.DefaultBackgroundColor = BackColor;

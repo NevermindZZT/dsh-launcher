@@ -16,6 +16,7 @@ public static class ThemeHelper
     private static bool _hasPagePalette;
 
     public static Palette CurrentPagePalette => _hasPagePalette ? _pagePalette : GetPalette(true);
+    internal static bool HasPagePalette => _hasPagePalette;
     public static event Action<Palette>? PagePaletteChanged;
 
     public static void SetPagePalette(Palette palette)

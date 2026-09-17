@@ -24,6 +24,7 @@ internal sealed class LauncherModalWindow : Form
         Text = "DshLauncher";
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
+        LauncherIconTheme.Attach(this);
         BackColor = _palette.WindowBack;
         _web.BackColor = BackColor;
         _web.DefaultBackgroundColor = BackColor;

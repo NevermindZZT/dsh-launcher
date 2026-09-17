@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="app.ico" />
+    <EmbeddedResource Include="app-light.ico" />
   </ItemGroup>
 
   <!-- The launcher uses WebView2 WinForms only; exclude the package transitive WPF assembly to avoid WindowsBase conflicts. -->

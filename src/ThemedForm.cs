@@ -15,6 +15,7 @@ public abstract class ThemedForm : Form
         ShowInTaskbar = true;
         StartPosition = FormStartPosition.CenterParent;
         Font = UiFont();
+        LauncherIconTheme.Attach(this);
     }
 
     /// <summary>Win11 默认字体 Segoe UI Variable Text 10pt（Win10 回退 Segoe UI）。</summary>
@@ -73,6 +74,7 @@ public abstract class ThemedForm : Form
     {
         if (!IsHandleCreated) return;
         var p = Palette;
+        LauncherIconTheme.Apply(this, p);
         ThemeHelper.ApplyWindowTheme(Handle, IsDark);
         ThemeHelper.ApplyTitleBarPalette(Handle, p);
         BackColor = p.WindowBack;

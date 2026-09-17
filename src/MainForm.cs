@@ -377,6 +377,22 @@ public sealed class MainForm : Form
         }
     }
 
+    private static async Task ClearLoopbackCookiesAsync(CoreWebView2 core)
+    {
+        try
+        {
+            foreach (var origin in new[] { "http://127.0.0.1/", "http://localhost/" })
+            {
+                var cookies = await core.CookieManager.GetCookiesAsync(origin);
+                foreach (var cookie in cookies) core.CookieManager.DeleteCookie(cookie);
+            }
+        }
+        catch (Exception ex)
+        {
+            Diag.Log("清理 dsh loopback cookies 失败: " + ex.Message);
+        }
+    }
+
     /// <summary>初始化 WebView2（独立 user data 目录、深色背景）并收紧导航/权限策略。</summary>
     private async Task EnsureWebView2Async()
     {
@@ -395,24 +411,26 @@ public sealed class MainForm : Form
         await _web.EnsureCoreWebView2Async(env);
 
         var cwv = _web.CoreWebView2 ?? throw new InvalidOperationException("WebView2 初始化失败");
+        // dsh client-module combo requests can return HTTP 431 when stale loopback
+        // cookies from the persistent WebView2 profile inflate request headers.
+        // The dsh URL carries its own one-time token, so clear only local loopback
+        // cookies before loading a fresh host session.
+        await ClearLoopbackCookiesAsync(cwv);
         cwv.Settings.AreDefaultContextMenusEnabled = true;
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
-        // Keep a narrow diagnostic trace for DSH RPCs. It contains only method,
-        // endpoint and status (never bodies, cookies or startup tokens), and lets
-        // us prove whether WebView2 issues duplicate session-resume requests.
-        cwv.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
-        cwv.WebResourceRequested += (_, request) =>
-        {
-            if (Uri.TryCreate(request.Request.Uri, UriKind.Absolute, out var uri) && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
-                Diag.Log($"[DSH API] -> {request.Request.Method} {uri.AbsolutePath}");
-        };
+        // Do not install a catch-all WebResourceRequested filter here. WebView2
+        // request interception can change how the dsh client-module combo scripts
+        // are resolved, even when the handler only logs. Response tracing does not
+        // intercept requests and is sufficient for diagnostics.
         cwv.WebResourceResponseReceived += (_, response) =>
         {
             try
             {
-                if (Uri.TryCreate(response.Request.Uri, UriKind.Absolute, out var uri) && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
-                    Diag.Log($"[DSH API] <- {(int)response.Response.StatusCode} {response.Request.Method} {uri.AbsolutePath}");
+                if (!Uri.TryCreate(response.Request.Uri, UriKind.Absolute, out var uri)) return;
+                var path = uri.AbsolutePath;
+                if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("/plugins/", StringComparison.OrdinalIgnoreCase))
+                    Diag.Log($"[DSH WEB] <- {(int)response.Response.StatusCode} {response.Request.Method} {path}{uri.Query}");
             }
             catch { }
         };

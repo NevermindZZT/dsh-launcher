@@ -109,7 +109,22 @@ internal sealed class NativeCaptionChrome : IDisposable
         {
             if (ReferenceEquals(_popup, popup)) _popup = null;
         };
-        popup.ShowAt(point);
+        try
+        {
+            popup.ShowAt(point);
+        }
+        catch (ObjectDisposedException ex)
+        {
+            Diag.Log("标题栏菜单图标已释放，已忽略本次弹出: " + ex.Message);
+            if (!popup.IsDisposed) popup.Dispose();
+            if (ReferenceEquals(_popup, popup)) _popup = null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Diag.Log("标题栏菜单创建失败，已忽略本次弹出: " + ex.Message);
+            if (!popup.IsDisposed) popup.Dispose();
+            if (ReferenceEquals(_popup, popup)) _popup = null;
+        }
         return true;
     }
 
@@ -283,6 +298,7 @@ internal sealed class NativeCaptionChrome : IDisposable
             AutoScaleMode = AutoScaleMode.Dpi;
             TopMost = true;
             BackColor = palette.SurfaceAlt;
+            Icon = LauncherIconTheme.Load(palette);
             DoubleBuffered = true;
             Controls.Add(_columns);
             Deactivate += (_, _) => { if (!IsDisposed) Close(); };
@@ -304,6 +320,7 @@ internal sealed class NativeCaptionChrome : IDisposable
         {
             _palette = palette;
             BackColor = palette.SurfaceAlt;
+            LauncherIconTheme.Apply(this, palette);
             RebuildLayout();
             Invalidate(true);
         }

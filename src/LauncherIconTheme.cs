@@ -11,6 +11,27 @@ namespace DshLauncher;
 /// </summary>
 internal static class LauncherIconTheme
 {
+    // WinForms can keep an icon handle alive while an owned form or a recreated
+    // window handle is being shown. Retire replaced icons only at process exit;
+    // disposing them immediately can leave Form.UpdateWindowIcon with a dead handle.
+    private static readonly object RetiredIconGate = new();
+    private static readonly List<Icon> RetiredIcons = new();
+
+    static LauncherIconTheme()
+    {
+        Application.ApplicationExit += (_, _) =>
+        {
+            lock (RetiredIconGate)
+            {
+                foreach (var icon in RetiredIcons)
+                {
+                    try { icon.Dispose(); } catch { }
+                }
+                RetiredIcons.Clear();
+            }
+        };
+    }
+
     private const string DarkThemeResource = "DshLauncher.app.ico";
     private const string LightThemeResource = "DshLauncher.app-light.ico";
 
@@ -69,16 +90,6 @@ internal static class LauncherIconTheme
         form.FormClosed += (_, _) =>
         {
             ThemeHelper.PagePaletteChanged -= OnPaletteChanged;
-            try
-            {
-                var icon = form.Icon;
-                form.Icon = null;
-                icon?.Dispose();
-            }
-            catch
-            {
-                // Form disposal is already in progress.
-            }
         };
     }
 
@@ -88,7 +99,7 @@ internal static class LauncherIconTheme
         var next = Load(palette);
         var previous = form.Icon;
         form.Icon = next;
-        if (previous != null && !ReferenceEquals(previous, next)) previous.Dispose();
+        Retire(previous, next);
     }
 
     public static void Apply(NotifyIcon tray, ThemeHelper.Palette palette)
@@ -96,6 +107,12 @@ internal static class LauncherIconTheme
         var next = Load(palette);
         var previous = tray.Icon;
         tray.Icon = next;
-        if (previous != null && !ReferenceEquals(previous, next)) previous.Dispose();
+        Retire(previous, next);
+    }
+
+    private static void Retire(Icon? previous, Icon next)
+    {
+        if (previous == null || ReferenceEquals(previous, next)) return;
+        lock (RetiredIconGate) RetiredIcons.Add(previous);
     }
 }

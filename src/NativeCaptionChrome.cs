@@ -276,7 +276,7 @@ internal sealed class NativeCaptionChrome : IDisposable
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Padding = new Padding(6),
+            Padding = new Padding(8),
             Margin = new Padding(0),
         };
         private readonly IReadOnlyList<MenuEntry> _rootEntries;
@@ -296,6 +296,7 @@ internal sealed class NativeCaptionChrome : IDisposable
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
             AutoScaleMode = AutoScaleMode.Dpi;
+            Font = new Font("Segoe UI", 10f);
             TopMost = true;
             BackColor = palette.SurfaceAlt;
             Icon = LauncherIconTheme.Load(palette);
@@ -356,9 +357,9 @@ internal sealed class NativeCaptionChrome : IDisposable
                 var hasChildren = entry.Children is { Length: > 0 };
                 var button = new Button
                 {
-                    Text = hasChildren ? entry.Text + "  ›" : entry.Text,
+                    Text = entry.Text,
                     Width = width,
-                    Height = 36,
+                    Height = 42,
                     AutoSize = false,
                     FlatStyle = FlatStyle.Flat,
                     UseVisualStyleBackColor = false,
@@ -366,15 +367,24 @@ internal sealed class NativeCaptionChrome : IDisposable
                     BackColor = _palette.SurfaceAlt,
                     ForeColor = _palette.Text,
                     TextAlign = ContentAlignment.MiddleLeft,
-                    Padding = new Padding(12, 0, 12, 0),
-                    Margin = new Padding(1),
+                    Padding = new Padding(16, 0, 16, 0),
+                    Margin = new Padding(2),
                     TabStop = false,
                 };
                 var normal = _palette.SurfaceAlt;
                 var hover = _palette.WindowBack.GetBrightness() < 0.55f ? ThemeHelper.Lighten(_palette.Surface, 8) : ThemeHelper.Darken(_palette.Surface, 8);
                 button.MouseEnter += (_, _) => { button.BackColor = hover; button.Invalidate(); };
                 button.MouseLeave += (_, _) => { button.BackColor = normal; button.Invalidate(); };
-                if (hasChildren) button.Click += (_, _) => { _activeSubmenu = entry.Children; RebuildLayout(); };
+                if (hasChildren)
+                {
+                    button.Paint += (_, e) =>
+                    {
+                        var chevron = new Rectangle(button.ClientSize.Width - 28, 0, 18, button.ClientSize.Height);
+                        TextRenderer.DrawText(e.Graphics, "›", button.Font, chevron, button.ForeColor,
+                            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                    };
+                    button.Click += (_, _) => { _activeSubmenu = entry.Children; RebuildLayout(); };
+                }
                 else if (entry.Action != null) button.Click += (_, _) => _owner.ExecuteMenuAction(entry.Action);
                 column.Controls.Add(button);
             }
@@ -389,7 +399,7 @@ internal sealed class NativeCaptionChrome : IDisposable
                 var text = entry.Text + (entry.Children is { Length: > 0 } ? "  ›" : "");
                 max = Math.Max(max, TextRenderer.MeasureText(text, Font).Width);
             }
-            return Math.Max(150, max + 32);
+            return Math.Max(190, max + 60);
         }
 
         private int ColumnWidth(IReadOnlyList<CaptionMenuItem> entries) => ColumnWidth(entries.Select(x => new MenuEntry(x.Text, x.Action, null, false)).ToArray());

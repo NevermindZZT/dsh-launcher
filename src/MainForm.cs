@@ -25,7 +25,8 @@ public sealed class MainForm : Form
     private readonly ManagerFrontendClient _managerFrontend;
     private readonly DshInteractionCoordinator _interactions = new();
     private readonly BrowserDshInteractionReplyTracker _browserInteractionReplies = new();
-    private ToolStripMenuItem? _pendingInteractionsMenu;
+    private readonly List<TrayMenuEntry> _trayMenuEntries = new();
+    private ThemedTrayMenuWindow? _trayMenuWindow;
     private DshInteractionWebOverlayForm? _interactionOverlay;
     private ManagerInteractionEventClient? _managerInteractions;
     private IDshConnection _current = null!;
@@ -83,7 +84,6 @@ public sealed class MainForm : Form
                 overlay.DismissCancelled();
             }
         });
-        _interactions.PendingCountChanged += count => SafeUi(() => UpdatePendingInteractionMenu(count));
         _interactions.RefreshConnections(_connections.Connections);
         _current = _connections.Local;
         Diag.Log($"connections: {_connections.Connections.Count} ({string.Join(", ", _connections.Connections.Select(c => c.DisplayName))})");
@@ -144,30 +144,28 @@ public sealed class MainForm : Form
         };
         ThemeHelper.PagePaletteChanged += OnPagePaletteChanged;
         _notifications = new WindowsNotificationService(_tray);
-        var trayMenu = new ContextMenuStrip();
-        trayMenu.Items.Add("打开主窗口", null, (_, _) => ShowMainWindow());
+        _trayMenuEntries.Add(new TrayMenuEntry("打开主窗口", ShowMainWindow));
         // SSH 连接窗口（显示/激活）
         foreach (var c in _connections.Connections.Skip(1))
         {
             var conn = c;
-            trayMenu.Items.Add("SSH: " + conn.DisplayName, null, (_, _) => ShowOrOpenRemoteWindow(conn));
+            _trayMenuEntries.Add(new TrayMenuEntry("SSH: " + conn.DisplayName, () => ShowOrOpenRemoteWindow(conn)));
         }
-        trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("重启宿主  (Ctrl+Shift+R)", null, (_, _) => _ = RestartHostAsync());
-        trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("日志  (Ctrl+Shift+L)", null, (_, _) => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() }));
-        trayMenu.Items.Add("插件管理  (Ctrl+Shift+P)", null, (_, _) => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true }));
-        trayMenu.Items.Add("设置  (Ctrl+Shift+S)", null, (_, _) => ShowSettingsForm());
-        trayMenu.Items.Add("dsh-manager  (Ctrl+Shift+M)", null, (_, _) => _ = ShowManagerAsync());
-        _pendingInteractionsMenu = new ToolStripMenuItem("待处理确认 (0)", null, (_, _) => ShowPendingInteraction());
-        _pendingInteractionsMenu.Enabled = false;
-        trayMenu.Items.Add(_pendingInteractionsMenu);
-        trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("更新 dsh…", null, (_, _) => _ = UpdateDshAsync());
-        trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("退出  (Ctrl+Shift+Q)", null, (_, _) => OnQuit());
-        trayMenu.Renderer = new ThemeToolStripRenderer(); // WinUI 3 风格主题菜单
-        _tray.ContextMenuStrip = trayMenu;
+        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+        _trayMenuEntries.Add(new TrayMenuEntry("重启宿主  (Ctrl+Shift+R)", () => _ = RestartHostAsync()));
+        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+        _trayMenuEntries.Add(new TrayMenuEntry("日志  (Ctrl+Shift+L)", () => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() })));
+        _trayMenuEntries.Add(new TrayMenuEntry("插件管理  (Ctrl+Shift+P)", () => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true })));
+        _trayMenuEntries.Add(new TrayMenuEntry("设置  (Ctrl+Shift+S)", ShowSettingsForm));
+        _trayMenuEntries.Add(new TrayMenuEntry("dsh-manager  (Ctrl+Shift+M)", () => _ = ShowManagerAsync()));
+        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+        _trayMenuEntries.Add(new TrayMenuEntry("更新 dsh…", () => _ = UpdateDshAsync()));
+        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+        _trayMenuEntries.Add(new TrayMenuEntry("退出  (Ctrl+Shift+Q)", OnQuit));
+        _tray.MouseUp += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Right) ShowTrayMenu();
+        };
         _tray.DoubleClick += (_, _) => ShowMainWindow();
 
         // 本地连接事件（SSH 连接由各自的 ConnectionWindow 订阅处理）
@@ -217,6 +215,8 @@ public sealed class MainForm : Form
         FormClosed += (_, _) =>
         {
             ThemeHelper.PagePaletteChanged -= OnPagePaletteChanged;
+            _trayMenuWindow?.Close();
+            _trayMenuWindow = null;
             _notifications.Dispose();
             try { _managerInteractions?.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
             _managerFrontend.Dispose();
@@ -1504,13 +1504,6 @@ public sealed class MainForm : Form
             _notifications.Show("Agent 请求排队中", $"还有 {_interactions.PendingCount} 个请求等待显示。", null, requireInteraction: true);
     }
 
-    private void UpdatePendingInteractionMenu(int count)
-    {
-        if (_pendingInteractionsMenu == null) return;
-        _pendingInteractionsMenu.Text = $"待处理确认 ({count})";
-        _pendingInteractionsMenu.Enabled = count > 0;
-    }
-
     /// <summary>更新托盘 ToolTip 反映宿主状态。</summary>
     private void UpdateTrayStatus(HostState s)
     {
@@ -1554,6 +1547,27 @@ public sealed class MainForm : Form
         else _ = OnQuitAsync();
     }
 
+    private void ShowTrayMenu()
+    {
+        if (_quitting || IsDisposed) return;
+        SafeUi(() =>
+        {
+            if (_trayMenuWindow is { IsDisposed: false })
+            {
+                _trayMenuWindow.Close();
+                _trayMenuWindow = null;
+                return;
+            }
+            var menu = new ThemedTrayMenuWindow(_trayMenuEntries, ThemeHelper.CurrentPagePalette);
+            _trayMenuWindow = menu;
+            menu.FormClosed += (_, _) =>
+            {
+                if (ReferenceEquals(_trayMenuWindow, menu)) _trayMenuWindow = null;
+            };
+            menu.ShowAt(Cursor.Position);
+        });
+    }
+
     private void ShowMainWindow()
     {
         SafeUi(() =>
@@ -1570,6 +1584,8 @@ public sealed class MainForm : Form
     {
         if (_quitting) return;
         _quitting = true;
+        _trayMenuWindow?.Close();
+        _trayMenuWindow = null;
         _tray.Visible = false;
         foreach (var c in _connections.Connections) { try { await c.StopAsync(); } catch { } }
         try { await _managerAgent.DisposeAsync(); } catch { }

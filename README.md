@@ -2,7 +2,7 @@
 
 > **Manager transport migration:** dsh-manager now uses one plain HTTP upstream port and does not use private certificates or TLS fingerprints. Use `http://` only on trusted private networks; for public access configure HTTPS/WSS at an external reverse proxy. DSH 0.1.2-rc.1 startup URLs carry a one-time token; DshLauncher keeps it in memory for initial navigation and redacts it from launcher logs.
 
-![Version](https://img.shields.io/badge/version-v0.4.5-blue)
+![Version](https://img.shields.io/badge/version-v0.4.6-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)

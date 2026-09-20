@@ -36,6 +36,7 @@ internal static class WebThemeBridge
   var style=document.getElementById('dsh-launcher-theme-bridge');
   if(!style){style=document.createElement('style');style.id='dsh-launcher-theme-bridge';(document.head||document.documentElement).appendChild(style)}
   style.textContent='html,body{background:'+t.background+' !important;color:'+t.text+' !important;color-scheme:'+scheme+' !important}'+
+   'body.dsh-interaction{background:'+t.surface+' !important;color:'+t.text+' !important}'+
    'body,.app,main,.content{background:'+t.background+' !important;color:'+t.text+' !important}'+
    'aside,.header,.card,.dialog,.list,.manager-card,.item,.plugin-select{background:'+t.surface+' !important;color:'+t.text+' !important;border-color:'+t.border+' !important}'+
    'input,textarea,select,#dsh-modal input,#dsh-modal textarea,#dsh-modal select,#dsh-modal #logbox{background:'+t.surface+' !important;color:'+t.text+' !important;border-color:'+t.border+' !important}'+

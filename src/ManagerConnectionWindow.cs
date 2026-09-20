@@ -246,6 +246,7 @@ public sealed class ManagerConnectionWindow : Form
 
     protected override void WndProc(ref Message m)
     {
+        if (BrowserMouseNavigationGuard.TryHandle(ref m)) return;
         if (_captionChrome?.TryHandleWindowMessage(ref m) == true) return;
         base.WndProc(ref m);
     }

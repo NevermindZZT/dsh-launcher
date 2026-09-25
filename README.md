@@ -1,6 +1,6 @@
 # DshLauncher — DeepSeek Harness 一键启动器
 
-> **Manager transport migration:** dsh-manager now uses one plain HTTP upstream port and does not use private certificates or TLS fingerprints. Use `http://` only on trusted private networks; for public access configure HTTPS/WSS at an external reverse proxy. DSH 0.1.2-rc.1 startup URLs carry a one-time token; DshLauncher keeps it in memory for initial navigation and redacts it from launcher logs.
+> **Manager transport migration:** dsh-manager now uses one plain HTTP upstream port and does not use private certificates or TLS fingerprints. Use `http://` only on trusted private networks; for public access configure HTTPS/WSS at an external reverse proxy. DSH 0.1.2+ startup URLs carry a process-local one-time token; DshLauncher keeps it in memory for initial navigation and redacts it from launcher logs.
 
 ![Version](https://img.shields.io/badge/version-v0.4.7-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -76,7 +76,7 @@
 
 ### 3. SSH 远程连接
 
-对于 DSH 0.1.2-rc.1，launcher 会捕获远端 `dsh web:` 启动 URL 中的 token，并只在当前内存会话中改写为本地转发地址；日志会隐藏 token。旧的、已运行但没有可恢复 startup token 的远端 dsh 需要先停止后重新由 launcher 启动。
+连接本地或 SSH 服务器时，launcher 会先探测并复用已有的 DSH 实例，避免同一 profile 被启动两个进程。新启动的实例会从 `dsh web:` 就绪 URL 捕获 process-local startup token，仅在内存中改写成本地转发地址；launcher 自身日志会脱敏。SSH 场景下，远端 DSH 启动日志用于后续恢复 URL，限制为用户私有的 600 权限，并在新启动前轮转。连接已有实例时，如果 launcher 无法从它的启动日志恢复 token，会先尝试复用该 WebView 的登录 Cookie；若 DSH 返回 401 且没有可用 Cookie，launcher 会弹窗请求 token（可粘贴 token 值或完整启动 URL）；输入只用于当前内存连接，不写入 launcher 设置或日志，启用 Manager Agent 时 URL 仍按现有实例状态通道上报。取消或认证仍失败时，现有实例保持运行且不会启动第二个实例。外部浏览器的 Cookie 不与 WebView2 共享；若需要新的 startup token，请先停止外部实例，再由 launcher 启动。
 
 1. **准备服务器**：安装 Node.js 与 dsh（`npm install -g @deepseek-ai/dsh`）
 2. **添加连接**：设置 → SSH 连接 → 新增（或从「系统 SSH 配置」导入 `~/.ssh/config` 已有主机）

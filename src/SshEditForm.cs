@@ -20,7 +20,12 @@ public sealed class SshEditForm : ThemedForm
     private readonly InputBox _password = new(34) { Width = 220 };
     private readonly InputBox _localPort = new(34) { Width = 80 };
     private readonly InputBox _remotePort = new(34) { Width = 80 };
-    private readonly ThemedCheckBox _chkStopOnClose = new() { Text = "关闭启动器时停止远端 dsh（不勾选 = 保持运行）" };
+    private readonly ThemedCheckBox _chkStopOnClose = new()
+    {
+        Text = DshStartupAuthMessages.Localize(
+            "关闭时停止本连接启动的远端 DSH（复用实例保留）",
+            "Stop DSH started by this connection on close (keep reused instances)")
+    };
     private readonly ThemedCheckBox _chkAutoConnect = new() { Text = "启动启动器时自动连接（多连接并行）" };
     private readonly RoundedButton _btnSave = new() { Text = "保存", Width = 96, Height = 36, DialogResult = DialogResult.OK };
     private readonly RoundedButton _btnCancel = new() { Text = "取消", Width = 96, Height = 36, DialogResult = DialogResult.Cancel };

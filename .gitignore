@@ -4,6 +4,8 @@ dist/
 # ===== 构建产物（编译输出） =====
 src/bin/
 src/obj/
+tests/bin/
+tests/obj/
 
 # ===== 本地工具链（.NET SDK + NuGet 本地源，仅开发机需要） =====
 .tools/

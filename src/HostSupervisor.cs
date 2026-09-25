@@ -35,6 +35,7 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
 
     private const int StartupDiagnosticMaxChars = 12_000;
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly StringBuilder _startupDiagnostics = new();
     private Process? _process;
     private IntPtr _job = IntPtr.Zero;
@@ -49,6 +50,16 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
     public HostState State { get; private set; } = HostState.Stopped;
     public string? CurrentUrl { get; private set; }
     public bool IsAttached { get; private set; }
+
+    public void SetStartupUrl(string url)
+    {
+        if (!DshStartupUrl.HasToken(url)) throw new ArgumentException("A valid DSH startup token URL is required.", nameof(url));
+        lock (_gate)
+        {
+            if (State != HostState.Running) throw new InvalidOperationException("DSH is not running.");
+            CurrentUrl = url;
+        }
+    }
     public string LogFile { get; }
 
     /// <summary>最近一次 dsh 启动/异常退出的详细诊断（包含 stdout/stderr 尾部）。</summary>
@@ -83,27 +94,48 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
     /// <summary>启动宿主：优先 attach 已有实例，否则 spawn 新进程。返回就绪 URL。</summary>
     public async Task<string> StartAsync(CancellationToken ct = default)
     {
-        Diag.Log("StartAsync begin");
-        lock (_gate)
+        await _startGate.WaitAsync(ct);
+        try
         {
-            if (State is HostState.Starting or HostState.Running or HostState.Stopping)
-                return CurrentUrl ?? throw new InvalidOperationException("宿主已在运行");
-        }
-        ResetStartupDiagnostics();
+            Diag.Log("StartAsync begin");
+            lock (_gate)
+            {
+                if (_disposed) throw new ObjectDisposedException(nameof(HostSupervisor));
+                if (State == HostState.Running && !string.IsNullOrWhiteSpace(CurrentUrl)) return CurrentUrl;
+                if (State == HostState.Stopping) throw new InvalidOperationException("宿主正在停止，请稍后重试");
+                CurrentUrl = null;
+                IsAttached = false;
+            }
+            ResetStartupDiagnostics();
+            SetState(HostState.Starting);
 
-        var attached = await TryAttachExistingAsync(ct);
-        if (attached != null)
+            var attached = await TryAttachExistingAsync(ct);
+            if (attached != null)
+            {
+                IsAttached = true;
+                CurrentUrl = attached;
+                SetState(HostState.Running);
+                Log("attach 到已有 dsh 实例: " + DshStartupUrl.Redact(attached));
+                Ready?.Invoke(attached);
+                return attached;
+            }
+
+            return await SpawnAsync(ct);
+        }
+        catch (OperationCanceledException)
         {
-            IsAttached = true;
-            CurrentUrl = attached;
-            SetState(HostState.Running);
-            Log($"attach 到已有 dsh 实例: {attached}");
-            Ready?.Invoke(attached);
-            return attached;
+            if (State == HostState.Starting) SetState(HostState.Stopped);
+            throw;
         }
-
-        IsAttached = false;
-        return await SpawnAsync(ct);
+        catch
+        {
+            if (State == HostState.Starting) SetState(HostState.Failed);
+            throw;
+        }
+        finally
+        {
+            _startGate.Release();
+        }
     }
 
     // ── IDshConnection（本地实现）──
@@ -209,7 +241,6 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
             throw new InvalidOperationException(message);
         }
 
-        SetState(HostState.Starting);
         Log($"spawn: {nodeExe} --expose-internals \"{binJs}\" web --host 127.0.0.1 --port 0 --no-open");
 
         var psi = new ProcessStartInfo
@@ -402,8 +433,10 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
                     if (Uri.TryCreate(url, UriKind.Absolute, out var u)
                         && u.Scheme == "http" && u.Host == "127.0.0.1" && u.Port > 0)
                     {
+                        if (!DshStartupUrl.HasToken(url))
+                            Log("DSH ready URL 未包含 startup token；先尝试复用现有 WebView 会话，若未认证将提示用户");
                         ready.TrySetResult(url);
-                        Log("就绪行解析成功: " + url);
+                        Log("就绪行解析成功: " + RedactSensitiveUrl(url));
                     }
                 }
             }
@@ -424,8 +457,9 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
             {
                 var line = await reader.ReadLineAsync();
                 if (line == null) break;
-                CaptureStartupLine("[err] " + line);
-                Log("[err] " + line);
+                var safeLine = RedactSensitiveUrl(line);
+                CaptureStartupLine("[err] " + safeLine);
+                Log("[err] " + safeLine);
             }
         }
         catch (Exception ex)
@@ -455,53 +489,70 @@ public sealed class HostSupervisor : IDshConnection, IDisposable
     public string WorkingDirectory { get; set; } =
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-    /// <summary>探测 attach 端口是否已有 dsh 实例在服务（HTTP 200 + 精确 dsh 标记 + 非空响应）。</summary>
+    private IReadOnlyList<int> GetAttachPortCandidates()
+    {
+        var ports = new List<int>();
+        var seen = new HashSet<int>();
+        void Add(int port)
+        {
+            if (port is > 0 and < 65536 && seen.Add(port)) ports.Add(port);
+        }
+
+        Add(AttachPort);
+        Add(DefaultPort);
+        foreach (var path in new[] { LogFile, LogFile + ".1" })
+        {
+            try
+            {
+                if (!File.Exists(path)) continue;
+                foreach (var line in File.ReadLines(path).TakeLast(200).Reverse())
+                {
+                    if (!line.Contains("dsh web:", StringComparison.OrdinalIgnoreCase)
+                        && !line.Contains("就绪", StringComparison.OrdinalIgnoreCase)) continue;
+                    foreach (Match match in Regex.Matches(line, @"https?://127\.0\.0\.1:(?<port>\d+)", RegexOptions.IgnoreCase))
+                    {
+                        if (int.TryParse(match.Groups["port"].Value, out var port)) Add(port);
+                    }
+                }
+            }
+            catch { /* stale or unreadable logs are not an attach failure */ }
+        }
+        return ports;
+    }
+
+    /// <summary>探测常用端口和最近由 launcher 启动的端口；命中已认证/需 Cookie 的 DSH 时复用，不再 spawn 第二个实例。</summary>
     private async Task<string?> TryAttachExistingAsync(CancellationToken ct)
     {
-        var url = $"http://127.0.0.1:{AttachPort}";
-        try
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        foreach (var port in GetAttachPortCandidates())
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            using var resp = await client.GetAsync(url + "/", ct);
-            if (resp.StatusCode == HttpStatusCode.Unauthorized)
+            var url = $"http://127.0.0.1:{port}";
+            try
             {
-                // DSH 0.1.2+ deliberately protects its root with a one-time startup
-                // token. A 401 still proves a live DSH Host owns this DSH_HOME.
-                // Spawning another Host would make both processes resume the same
-                // durable sessions and cause SessionAlreadyOwnedError.
-                var message = $"检测到已有 dsh Host 正在 {url} 运行，但它需要 startup token 才能附加。为避免两个 Host 争抢同一会话，请先关闭已有 dsh Host，或继续在原浏览器窗口使用它。";
-                Log($"attach 探测 {url}: HTTP 401（已有认证 dsh）-> 禁止启动第二个实例");
-                SetFailureDetails(message);
-                SetState(HostState.Failed);
-                throw new InvalidOperationException(message);
+                using var resp = await client.GetAsync(url + "/", ct);
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                if (!DshStartupUrl.IsDshResponse(resp.StatusCode, body))
+                {
+                    Log($"attach 探测 {url}: HTTP {(int)resp.StatusCode}，无 DSH 标记");
+                    continue;
+                }
+
+                if (resp.StatusCode == HttpStatusCode.Unauthorized)
+                    Log($"attach 探测 {url}: 检测到需要浏览器认证的已有 DSH；尝试复用 WebView Cookie，不启动第二个实例");
+                else
+                    Log($"attach 探测 {url}: 已有 DSH 就绪，复用实例");
+                return url;
             }
-            if (!resp.IsSuccessStatusCode)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                Log($"attach 探测 {url}: HTTP {(int)resp.StatusCode} -> 启动新实例");
-                return null;
+                throw;
             }
-            var html = await resp.Content.ReadAsStringAsync(ct);
-            // 收紧判定：仅 dsh 专属标记（__DSH_BOOT__ 由宿主注入；DeepSeek Harness 为页面标题），
-            // 且响应非空 —— 避免把端口残留 / 半死服务 / 其他应用的空页面误判为 dsh
-            var hit = html.Length > 0
-                && (html.Contains("__DSH_BOOT__", StringComparison.OrdinalIgnoreCase)
-                    || html.Contains("DeepSeek Harness", StringComparison.OrdinalIgnoreCase));
-            Log(hit
-                ? $"attach 探测 {url}: 发现 dsh 标记（{html.Length} 字节）-> 连接已有实例"
-                : $"attach 探测 {url}: 无 dsh 标记 -> 启动新实例");
-            return hit ? url : null;
+            catch (Exception ex)
+            {
+                Log($"attach 探测 {url}: 不可达（{ex.GetType().Name}）");
+            }
         }
-        catch (InvalidOperationException)
-        {
-            // An authenticated dsh Host was found. Do not swallow this guard and
-            // accidentally spawn a second process against the same DSH_HOME.
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Log($"attach 探测 {url}: 不可达（{ex.GetType().Name}）-> 启动新实例");
-            return null; // 不可达/超时 → 无实例
-        }
+        return null;
     }
 
     // ─────────────────────────── 路径解析 ───────────────────────────

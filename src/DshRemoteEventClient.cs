@@ -24,6 +24,7 @@ internal sealed class DshRemoteEventClient : IDshInteractionResponder, IAsyncDis
     private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _responseGate = new(1, 1);
     private Task? _loop;
+    private bool _tokenUnavailableLogged;
     private CookieContainer? _cookies;
     private string? _origin;
     private string? _clientId;
@@ -60,7 +61,18 @@ internal sealed class DshRemoteEventClient : IDshInteractionResponder, IAsyncDis
                     await Task.Delay(TimeSpan.FromSeconds(1), ct);
                     continue;
                 }
+                if (!DshStartupUrl.HasToken(startupUrl))
+                {
+                    if (!_tokenUnavailableLogged)
+                    {
+                        _tokenUnavailableLogged = true;
+                        _log($"[Approval] {_connection.DisplayName} 没有可恢复的 DSH startup token，跳过直连事件通道");
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                    continue;
+                }
 
+                _tokenUnavailableLogged = false;
                 await ConnectAndReceiveAsync(new Uri(startupUrl), ct);
                 delay = TimeSpan.FromSeconds(1);
             }

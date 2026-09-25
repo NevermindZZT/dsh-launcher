@@ -194,7 +194,7 @@ internal static class WebModalRouter
         '<div class="form-row"><label>'+t('远端 dsh 端口','Remote dsh port')+'</label><input id="ssh-remote" type="number" value="'+esc(c.remotePort||c.RemotePort||0)+'"></div>'+
         '<div class="form-row"><label>'+t('远端 Node 路径','Remote Node')+'</label><input id="ssh-node" value="'+esc(c.remoteNode||c.RemoteNode||'')+'"></div>'+
         '<div class="form-row"><label>'+t('远端 dsh 路径','Remote dsh path')+'</label><input id="ssh-dsh" value="'+esc(c.remoteDshBin||c.RemoteDshBin||'')+'"></div>'+
-        '<div class="form-row"><label>'+t('关闭时停止远端','Stop remote on close')+'</label><input id="ssh-stop" type="checkbox" '+((c.stopRemoteOnClose??c.StopRemoteOnClose??true)?'checked':'')+'></div>'+
+        '<div class="form-row"><label>'+t('关闭时停止本连接启动的实例（复用实例保留）','Stop DSH started by this connection on close (keep reused instances)')+'</label><input id="ssh-stop" type="checkbox" '+((c.stopRemoteOnClose??c.StopRemoteOnClose??true)?'checked':'')+'></div>'+
         '<div class="form-row"><label>'+t('启动时自动连接','Auto-connect')+'</label><input id="ssh-auto" type="checkbox" '+((c.autoConnect??c.AutoConnect??true)?'checked':'')+'></div>'+
         '<div class="actions"><button class="primary" id="ssh-save">'+t('保存','Save')+'</button><button id="ssh-cancel">'+t('取消','Cancel')+'</button></div>';
     }else if(page==='about'){

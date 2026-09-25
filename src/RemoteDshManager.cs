@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -45,6 +46,7 @@ public static class RemoteDshManager
             throw new InvalidOperationException("远端未检测到 dsh（需安装 Node.js 并执行 npm install -g @deepseek-ai/dsh）");
         }
         log($"远端 dsh 路径: {node} {dshBin}");
+        ResetStartupLog(runner);
 
         // 分级：systemd（Linux）→ launchctl（macOS）→ nohup（兜底）
         if (TrySystemd(runner, cfg, remotePort, node, dshBin, log)) return "systemd";
@@ -59,15 +61,30 @@ public static class RemoteDshManager
         return "nohup";
     }
 
-    /// <summary>远端 dsh 是否就绪（HTTP 200 探测）。</summary>
-    public static bool IsRemoteReady(SshRunner runner, int port)
+    /// <summary>返回 200/401 仅当响应正文确认为 DSH；其他 HTTP 服务不视为可复用实例。</summary>
+    public static int ProbeRemoteStatus(SshRunner runner, int port)
     {
+        if (port is <= 0 or >= 65536) return 0;
         try
         {
-            var code = runner.Exec($"curl -s -o /dev/null -w '%{{http_code}}' --max-time 3 http://127.0.0.1:{port}/ || echo 000", 15);
-            return code.Trim() is "200" or "401";
+            var response = runner.Exec(
+                $"curl -sS --max-time 3 -w '\\n__DSH_HTTP__%{{http_code}}' http://127.0.0.1:{port}/ 2>/dev/null || true",
+                15);
+            const string marker = "\n__DSH_HTTP__";
+            var markerIndex = response.LastIndexOf(marker, StringComparison.Ordinal);
+            if (markerIndex < 0) return 0;
+            var body = response[..markerIndex];
+            var statusText = response[(markerIndex + marker.Length)..].Trim();
+            if (!int.TryParse(statusText, out var status)) return 0;
+            return DshStartupUrl.IsDshResponse((HttpStatusCode)status, body) ? status : 0;
         }
-        catch { return false; }
+        catch { return 0; }
+    }
+
+    public static bool IsRemoteReady(SshRunner runner, int port)
+    {
+        var status = ProbeRemoteStatus(runner, port);
+        return status == (int)HttpStatusCode.OK || status == (int)HttpStatusCode.Unauthorized;
     }
 
     public static string? TryReadStartupUrl(SshRunner runner, int remotePort)
@@ -80,26 +97,55 @@ public static class RemoteDshManager
         catch { return null; }
     }
 
-    public static string WaitForStartupUrl(SshRunner runner, int remotePort, Action<string> log)
+    public static string? WaitForStartupUrl(
+        SshRunner runner,
+        int remotePort,
+        Action<string> log,
+        TimeSpan? timeout = null,
+        CancellationToken ct = default)
     {
-        for (var attempt = 0; attempt < 60; attempt++)
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(60));
+        while (DateTime.UtcNow < deadline)
         {
+            ct.ThrowIfCancellationRequested();
             var parsed = TryReadStartupUrl(runner, remotePort);
             if (parsed != null)
             {
-                log("已从远端 dsh 启动日志捕获 startup token（token 已隐藏）");
+                log(DshStartupUrl.HasToken(parsed)
+                    ? "已从远端 dsh 启动日志捕获 startup URL（token 已隐藏）"
+                    : "远端 dsh 启动日志没有 token，将尝试复用现有 WebView 会话");
                 return parsed;
             }
             Thread.Sleep(1000);
         }
-        throw new TimeoutException("远端 dsh 已启动，但在日志中未找到 startup token URL");
+        log("等待远端 startup URL 超时；不会再次启动同一 DSH 实例");
+        return null;
     }
 
     private static string? ParseStartupUrl(string raw, int remotePort)
     {
-        var match = Regex.Match(raw, @"https?://127\.0\.0\.1:(\d+)/\?token=([^\s]+)", RegexOptions.IgnoreCase);
-        if (!match.Success || !int.TryParse(match.Groups[1].Value, out var port) || port != remotePort) return null;
-        return match.Value.TrimEnd('\r', '\n', ',', ')');
+        var candidate = raw.Trim().TrimEnd(',', ')', ';');
+        var match = Regex.Match(candidate, @"^https?://127\.0\.0\.1:(?<port>\d+)(?:/[^\s]*)?$", RegexOptions.IgnoreCase);
+        if (!match.Success || !int.TryParse(match.Groups["port"].Value, out var port) || port != remotePort) return null;
+        return Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+            && uri.Scheme == "http"
+            && uri.Host == "127.0.0.1"
+            && uri.Port == remotePort
+            ? candidate
+            : null;
+    }
+
+    private static void ResetStartupLog(SshRunner runner)
+    {
+        // Startup URLs contain a process-local bearer token. Keep one private
+        // previous log for diagnostics, but never mistake an old token for the
+        // URL of a newly launched DSH process.
+        var result = runner.Exec(
+            "umask 077; mkdir -p ~/.dsh-launcher && mv -f ~/.dsh-launcher/dsh-web.log ~/.dsh-launcher/dsh-web.log.1 2>/dev/null; : > ~/.dsh-launcher/dsh-web.log && chmod 600 ~/.dsh-launcher/dsh-web.log && echo startup-log-ready",
+            20);
+        if (!result.Contains("startup-log-ready", StringComparison.Ordinal))
+            throw new InvalidOperationException("无法准备远端 DSH startup URL 日志；为避免错误复用旧 token，已取消启动。");
+        try { runner.Exec("chmod 600 ~/.dsh-launcher/dsh-web.log.1 2>/dev/null || true", 15); } catch { }
     }
 
     /// <summary>尝试 launchctl（macOS）启动；非 Darwin 或失败返回 false。</summary>

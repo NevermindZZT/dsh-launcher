@@ -15,6 +15,9 @@ public interface IDshConnection
     /// <summary>当前可访问的 URL（本地为 http://127.0.0.1:端口；SSH 为本地转发端口）。</summary>
     string? CurrentUrl { get; }
 
+    /// <summary>将用户提供的 DSH startup token URL 更新到当前连接内存状态；不得持久化或写日志。</summary>
+    void SetStartupUrl(string url);
+
     /// <summary>连接状态。</summary>
     HostState State { get; }
 
@@ -29,7 +32,7 @@ public interface IDshConnection
     /// <summary>启动连接并返回可加载的 URL。SSH 模式会连接服务器、启动远端 dsh、建立端口转发。</summary>
     Task<string> StartAsync(CancellationToken ct = default);
 
-    /// <summary>停止：本地杀进程树；SSH 按配置停止远端 dsh 并断开连接。</summary>
+    /// <summary>停止：本地仅终止启动器拥有的进程树；SSH 按配置停止本连接启动的远端 dsh，复用实例仅断开隧道。</summary>
     Task StopAsync();
 
     /// <summary>重启连接（SSH 模式重启远端 dsh）。</summary>

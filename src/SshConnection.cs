@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.RegularExpressions;
 
 namespace DshLauncher;
 
@@ -14,6 +15,8 @@ public sealed class SshConnection : IDshConnection, IDisposable
     private readonly SshConnectionConfig _config;
     private readonly SshRunner _runner;
     private Process? _tunnel;
+    private bool _ownsRemoteProcess;
+    private bool _reusingExistingRemotePort;
     private string? _localUrl;
     private int _localPort;
     private int _remotePort;
@@ -27,6 +30,13 @@ public sealed class SshConnection : IDshConnection, IDisposable
     public string DisplayName => _config.DisplayName;
     public string? CurrentUrl => _localUrl;
     public HostState State { get; private set; }
+
+    public void SetStartupUrl(string url)
+    {
+        if (!DshStartupUrl.HasToken(url)) throw new ArgumentException("A valid DSH startup token URL is required.", nameof(url));
+        if (string.IsNullOrWhiteSpace(_localUrl)) throw new InvalidOperationException("The SSH DSH connection is not ready.");
+        _localUrl = url;
+    }
     public string LogFile { get; }
 
     public event Action<HostState>? StateChanged;
@@ -72,6 +82,7 @@ public sealed class SshConnection : IDshConnection, IDisposable
     {
         // 已有 dsh 实例？（同一用户复用，避免多实例）
         var existing = FindExistingDshPort();
+        _reusingExistingRemotePort = existing > 0;
         if (existing > 0) { Log($"检测到已有 dsh 实例 (端口 {existing})，直接复用"); return existing; }
         // 配置指定端口
         if (_config.RemotePort > 0) return _config.RemotePort;
@@ -82,25 +93,73 @@ public sealed class SshConnection : IDshConnection, IDisposable
     /// <summary>探测远端是否已有 dsh 实例在运行（端口记录 / systemd service / 监听进程），返回其端口（0 = 无）。</summary>
     private int FindExistingDshPort()
     {
+        var checkedPorts = new HashSet<int>();
+        int CheckPort(int port)
+        {
+            if (port is <= 0 or >= 65536 || !checkedPorts.Add(port)) return 0;
+            return RemoteDshManager.IsRemoteReady(_runner, port) ? port : 0;
+        }
+
         try
         {
-            // 1) 端口记录文件 + 实例在跑？
             var recorded = _runner.Exec("cat ~/.dsh-launcher/dsh.port 2>/dev/null || echo 0", 20).Trim();
-            if (int.TryParse(recorded, out var rp) && rp > 0)
-            {
-                var code = _runner.Exec($"curl -s -o /dev/null -w '%{{http_code}}' --max-time 2 http://127.0.0.1:{rp}/ || echo 000", 20).Trim();
-                if (code == "200" || code == "401") return rp;
-            }
-            // 2) systemd service active？读 ExecStart 端口
-            var active = _runner.Exec("systemctl --user is-active dsh-launcher 2>/dev/null || echo inactive", 20).Trim();
+            if (int.TryParse(recorded, out var recordedPort) && CheckPort(recordedPort) > 0) return recordedPort;
+
+            if (_config.RemotePort > 0 && CheckPort(_config.RemotePort) > 0) return _config.RemotePort;
+            if (CheckPort(HostSupervisor.DefaultPort) > 0) return HostSupervisor.DefaultPort;
+
+            var active = _runner.Exec("systemctl --user is-active dsh-launcher.service 2>/dev/null || echo inactive", 20).Trim();
             if (active == "active")
             {
-                var sp = _runner.Exec("grep -o '--port [0-9]*' ~/.config/systemd/user/dsh-launcher.service 2>/dev/null | grep -o '[0-9]*' || echo 0", 20).Trim();
-                if (int.TryParse(sp, out var sp2) && sp2 > 0) return sp2;
+                var servicePort = _runner.Exec("grep -o -- '--port [0-9]*' ~/.config/systemd/user/dsh-launcher.service 2>/dev/null | grep -o '[0-9]*' | tail -1 || echo 0", 20).Trim();
+                if (int.TryParse(servicePort, out var port) && CheckPort(port) > 0) return port;
             }
-            // 3) 监听进程兜底（node dsh web）
-            var listen = _runner.Exec("ss -tlnp 2>/dev/null | grep 'bin.js web' | grep LISTEN | awk -F: '{print $(NF-1)}' | tail -1 || echo 0", 20).Trim();
-            if (int.TryParse(listen, out var lp) && lp > 0) return lp;
+
+            // Map DSH processes to listening ports; ss lists PID/name, not the script arguments.
+            var processes = _runner.Exec("ps -eo pid=,args= 2>/dev/null || ps -axo pid=,command 2>/dev/null", 20);
+            var dshPids = new HashSet<int>();
+            foreach (var line in processes.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var process = Regex.Match(line, @"^\s*(?<pid>\d+)\s+(?<args>.*)$");
+                if (!process.Success || !int.TryParse(process.Groups["pid"].Value, out var pid)) continue;
+                var args = process.Groups["args"].Value;
+                var looksLikeDsh = (args.Contains("bin.js", StringComparison.OrdinalIgnoreCase)
+                        || args.Contains("dsh web", StringComparison.OrdinalIgnoreCase))
+                    && args.Contains(" web", StringComparison.OrdinalIgnoreCase);
+                if (!looksLikeDsh) continue;
+                dshPids.Add(pid);
+                var portMatch = Regex.Match(args, @"(?:^|\s)--port(?:\s+|=)(?<port>\d+)", RegexOptions.IgnoreCase);
+                if (portMatch.Success && int.TryParse(portMatch.Groups["port"].Value, out var processPort)
+                    && CheckPort(processPort) > 0)
+                    return processPort;
+            }
+
+            if (dshPids.Count > 0)
+            {
+                var sockets = _runner.Exec("ss -H -ltnp 2>/dev/null || true", 20);
+                foreach (var line in sockets.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var pidMatch = Regex.Match(line, @"pid=(?<pid>\d+)");
+                    if (!pidMatch.Success || !int.TryParse(pidMatch.Groups["pid"].Value, out var pid) || !dshPids.Contains(pid)) continue;
+                    var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (fields.Length < 4) continue;
+                    var endpoint = fields[3];
+                    var colon = endpoint.LastIndexOf(':');
+                    if (colon < 0 || !int.TryParse(endpoint[(colon + 1)..].TrimEnd(']'), out var port)) continue;
+                    if (CheckPort(port) > 0) return port;
+                }
+
+                // macOS has no ss; use lsof's PID + LISTEN endpoint as a fallback.
+                var listeners = _runner.Exec("lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true", 20);
+                foreach (var line in listeners.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var pidMatch = Regex.Match(line, @"^\S+\s+(?<pid>\d+)\s+");
+                    if (!pidMatch.Success || !int.TryParse(pidMatch.Groups["pid"].Value, out var pid) || !dshPids.Contains(pid)) continue;
+                    var endpoint = Regex.Match(line, @":(?<port>\d+)\s+\(LISTEN\)");
+                    if (endpoint.Success && int.TryParse(endpoint.Groups["port"].Value, out var port) && CheckPort(port) > 0)
+                        return port;
+                }
+            }
         }
         catch { }
         return 0;
@@ -113,15 +172,30 @@ public sealed class SshConnection : IDshConnection, IDisposable
         var port = r.Trim().Split('\n')[0].Trim();
         return int.TryParse(port, out var p) && p > 0 ? p : 3080;
     }
-    private static async Task<int> ProbeLocalStatusAsync(int port)
+    private static async Task<int> ProbeLocalStatusAsync(int port, CancellationToken ct = default)
     {
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-            using var resp = await client.GetAsync($"http://127.0.0.1:{port}/");
-            return (int)resp.StatusCode;
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var resp = await client.GetAsync($"http://127.0.0.1:{port}/", ct);
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            return DshStartupUrl.IsDshResponse(resp.StatusCode, body) ? (int)resp.StatusCode : 0;
         }
         catch { return 0; }
+    }
+
+    private static async Task<int> WaitForLocalStatusAsync(int port, TimeSpan timeout, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        do
+        {
+            ct.ThrowIfCancellationRequested();
+            var status = await ProbeLocalStatusAsync(port, ct);
+            if (status != 0) return status;
+            if (DateTime.UtcNow >= deadline) break;
+            await Task.Delay(250, ct);
+        } while (true);
+        return 0;
     }
 
     private static async Task<bool> IsLocalReadyAsync(int port) => await ProbeLocalStatusAsync(port) == 200;
@@ -140,8 +214,29 @@ public sealed class SshConnection : IDshConnection, IDisposable
 
     private async Task<string> StartCoreAsync(CancellationToken ct = default)
     {
+        if (State == HostState.Running && !string.IsNullOrWhiteSpace(_localUrl) && _tunnel != null)
+        {
+            try { if (!_tunnel.HasExited) return _localUrl; } catch { }
+        }
+        _stopping = false;
+        _ownsRemoteProcess = false;
         SetState(HostState.Starting);
         Log($"正在连接 {DisplayName} …");
+
+        string PublishUrl(string url, string reason)
+        {
+            _localUrl = url;
+            SetState(HostState.Running);
+            Log(reason + ": " + RedactUrl(url));
+            Ready?.Invoke(url);
+            return url;
+        }
+
+        void RememberRemotePort(int port)
+        {
+            try { _runner.Exec($"mkdir -p ~/.dsh-launcher && echo {port} > ~/.dsh-launcher/dsh.port", 20); }
+            catch (Exception ex) { Log("保存远端 dsh 端口提示失败: " + ex.Message); }
+        }
 
         // 1) 测试 SSH 连接
         if (!_runner.TestConnection(out var detail))
@@ -152,11 +247,11 @@ public sealed class SshConnection : IDshConnection, IDisposable
         }
         Log($"SSH 已连接 {_config.Host}:{_config.Port}");
 
-        // 2) 远端端口解析：已有 dsh 实例（同一用户复用，不启动多个）→ 指定端口 → 随机空闲端口
+        // 2) 远端端口解析：先检查现有 DSH，再使用配置端口或空闲端口。
         var remotePort = ResolveRemotePort();
-        Log($"远端端口: {remotePort}{(remotePort == _config.RemotePort && _config.RemotePort > 0 ? "（配置指定）" : remotePort == FindExistingDshPort() ? "（复用已有实例）" : "（自动分配）")}");
+        Log($"远端端口: {remotePort}{(_reusingExistingRemotePort ? "（复用已有实例）" : remotePort == _config.RemotePort && _config.RemotePort > 0 ? "（配置指定）" : "（自动分配）")}");
 
-        // 3) 选本地端口并启动隧道：0 = 自动分配空闲端口；指定端口被占用也自动换（避免冲突）
+        // 3) 建立本地转发；等待隧道可达后再判断 DSH 状态，避免 SSH 握手竞态触发重复启动。
         var localPort = _config.LocalPort > 0 ? _config.LocalPort : FindFreePort();
         if (!IsPortFree(localPort)) localPort = FindFreePort();
         _localPort = localPort;
@@ -166,36 +261,54 @@ public sealed class SshConnection : IDshConnection, IDisposable
         _tunnel.Exited += (_, _) => _ = OnTunnelExitedAsync();
         Log($"隧道已建立: 127.0.0.1:{localPort} <- 远端 127.0.0.1:{remotePort} (pid {_tunnel.Id})");
 
-        // 4) 探测本地转发：200 = 旧版/已认证 dsh，401 = DSH 0.1.2 需要 startup token，0 = 未启动。
-        var localStatus = await ProbeLocalStatusAsync(localPort);
-        string? remoteStartupUrl = null;
+        var localStatus = await WaitForLocalStatusAsync(localPort, TimeSpan.FromSeconds(12), ct);
         if (localStatus == 200)
         {
-            _localUrl = $"http://127.0.0.1:{localPort}";
-            SetState(HostState.Running);
-            Log($"远端 dsh 就绪: {RedactUrl(_localUrl)}");
-            Ready?.Invoke(_localUrl);
-            return _localUrl;
+            _ownsRemoteProcess = false;
+            RememberRemotePort(remotePort);
+            return PublishUrl($"http://127.0.0.1:{localPort}", "远端已有 DSH 就绪，直接复用");
+        }
+        if (localStatus == 401)
+        {
+            _ownsRemoteProcess = false;
+            RememberRemotePort(remotePort);
+            Log("发现已运行且需要浏览器认证的远端 DSH；尝试读取 launcher 启动日志中的 token");
+            var existingUrl = RemoteDshManager.TryReadStartupUrl(_runner, remotePort);
+            if (DshStartupUrl.HasToken(existingUrl))
+                return PublishUrl(RebaseStartupUrl(existingUrl!, localPort), "复用远端 DSH startup URL");
+
+            return PublishUrl($"http://127.0.0.1:{localPort}", "未能恢复已有 DSH 的 startup token；尝试复用现有 WebView Cookie");
         }
 
+        string? remoteStartupUrl = null;
         try
         {
-            if (localStatus == 401)
+            Log("隧道已建立但远端 DSH 未就绪，检查并启动实例…");
+            var method = await Task.Run(() => RemoteDshManager.StartRemote(_runner, _config, remotePort, Log), ct);
+            _ownsRemoteProcess = method != "ready";
+            Log($"远端启动方式: {method}");
+            RememberRemotePort(remotePort);
+
+            remoteStartupUrl = RemoteDshManager.TryReadStartupUrl(_runner, remotePort);
+            if (!DshStartupUrl.HasToken(remoteStartupUrl) && method != "ready")
             {
-                Log("远端 dsh 已运行但需要 startup token，尝试读取远端启动 URL…");
-                remoteStartupUrl = RemoteDshManager.TryReadStartupUrl(_runner, remotePort);
-            }
-            else
-            {
-                Log("远端 dsh 未运行，正在启动…");
-                var method = await Task.Run(() => RemoteDshManager.StartRemote(_runner, _config, remotePort, Log), ct);
-                Log($"远端启动方式: {method}");
-                _runner.Exec($"mkdir -p ~/.dsh-launcher && echo {remotePort} > ~/.dsh-launcher/dsh.port", 20);
+                remoteStartupUrl = await Task.Run(() => RemoteDshManager.WaitForStartupUrl(
+                    _runner, remotePort, Log, TimeSpan.FromSeconds(60), ct), ct);
             }
 
-            if (string.IsNullOrWhiteSpace(remoteStartupUrl))
+            if (!DshStartupUrl.HasToken(remoteStartupUrl))
             {
-                remoteStartupUrl = await Task.Run(() => RemoteDshManager.WaitForStartupUrl(_runner, remotePort, Log), ct);
+                var remoteStatus = RemoteDshManager.ProbeRemoteStatus(_runner, remotePort);
+                if (remoteStatus == 200 || remoteStatus == 401)
+                {
+                    var forwardedStatus = await WaitForLocalStatusAsync(localPort, TimeSpan.FromSeconds(12), ct);
+                    if (forwardedStatus == 200 || forwardedStatus == 401)
+                    {
+                        Log("远端 DSH 已运行但未取得 startup token；保留实例并尝试复用当前 WebView Cookie");
+                        return PublishUrl($"http://127.0.0.1:{localPort}", "连接到已有远端 DSH");
+                    }
+                }
+                throw new TimeoutException("远端 DSH 已启动，但没有取得 startup token，且 SSH 转发未能确认可访问。请检查远端 DSH 日志；启动器不会再创建第二个实例。");
             }
         }
         catch (Exception ex)
@@ -207,19 +320,16 @@ public sealed class SshConnection : IDshConnection, IDisposable
             throw;
         }
 
-        if (string.IsNullOrWhiteSpace(remoteStartupUrl))
+        var readyUrl = RebaseStartupUrl(remoteStartupUrl!, localPort);
+        var readyStatus = await WaitForLocalStatusAsync(localPort, TimeSpan.FromSeconds(12), ct);
+        if (readyStatus == 0)
         {
             _tunnel?.Kill(entireProcessTree: true);
             _tunnel = null;
             SetState(HostState.Failed);
-            throw new InvalidOperationException("远端 dsh 已运行，但没有可用的 startup token；请停止远端 dsh 后重新连接");
+            throw new TimeoutException("已取得远端 DSH startup URL，但 SSH 本地转发未就绪。");
         }
-
-        _localUrl = RebaseStartupUrl(remoteStartupUrl, localPort);
-        SetState(HostState.Running);
-        Log($"远端 dsh startup URL 已捕获: {RedactUrl(_localUrl)}");
-        Ready?.Invoke(_localUrl);
-        return _localUrl;
+        return PublishUrl(readyUrl, "远端 DSH startup URL 已捕获");
     }
 
     private static string RebaseStartupUrl(string remoteUrl, int localPort)
@@ -273,13 +383,18 @@ public sealed class SshConnection : IDshConnection, IDisposable
         _stopping = true;
         try
         {
-            if (_config.StopRemoteOnClose)
+            if (_config.StopRemoteOnClose && _ownsRemoteProcess)
             {
                 Task.Run(() => RemoteDshManager.StopRemote(_runner, _config));
-                Log("已请求停止远端 dsh");
+                Log("关闭 launcher 时停止本连接启动的远端 dsh");
+            }
+            else if (!_ownsRemoteProcess)
+            {
+                Log("本连接复用了已有远端 dsh；关闭 SSH 窗口时保留该实例运行");
             }
         }
         catch (Exception ex) { Log("停止远端 dsh 异常: " + ex.Message); }
+        _ownsRemoteProcess = false;
         try { _tunnel?.Kill(entireProcessTree: true); } catch { }
         try { _tunnel?.Dispose(); } catch { }
         _tunnel = null;

@@ -47,6 +47,7 @@ public sealed class MainForm : Form
     private int _aboutRequestId;
     private bool _quitting;
     private bool _loadingHiddenGuard;
+    private bool _startupAuthNoticeShown;
 
     /// <summary>当前是否为 SSH 远程连接。</summary>
     /// <summary>当前活动连接（多连接下指向 Tab 当前项，现有代码继续用 _host 引用）。</summary>
@@ -178,9 +179,8 @@ public sealed class MainForm : Form
         });
         local.Ready += url => SafeUi(() =>
         {
-            Diag.Log("local ready: " + url);
-            Navigate(url);
-            HideLoading();
+            Diag.Log("local ready: " + DshStartupUrl.Redact(url));
+            _ = NavigateAsync(url);
         });
         local.UnexpectedExit += diag => SafeUi(() =>
         {
@@ -397,7 +397,7 @@ public sealed class MainForm : Form
         }
     }
 
-    private static async Task ClearLoopbackCookiesAsync(CoreWebView2 core)
+    internal static async Task ClearLoopbackCookiesAsync(CoreWebView2 core)
     {
         try
         {
@@ -431,11 +431,9 @@ public sealed class MainForm : Form
         await _web.EnsureCoreWebView2Async(env);
 
         var cwv = _web.CoreWebView2 ?? throw new InvalidOperationException("WebView2 初始化失败");
-        // dsh client-module combo requests can return HTTP 431 when stale loopback
-        // cookies from the persistent WebView2 profile inflate request headers.
-        // The dsh URL carries its own one-time token, so clear only local loopback
-        // cookies before loading a fresh host session.
-        await ClearLoopbackCookiesAsync(cwv);
+        // Existing DSH hosts may rely on the browser-session cookie already stored
+        // in this persistent WebView2 profile. Only clear loopback cookies when a
+        // fresh process-local startup token is available for an exchange.
         cwv.Settings.AreDefaultContextMenusEnabled = true;
         cwv.Settings.AreDevToolsEnabled = false;
         cwv.Settings.IsStatusBarEnabled = false;
@@ -450,7 +448,7 @@ public sealed class MainForm : Form
                 if (!Uri.TryCreate(response.Request.Uri, UriKind.Absolute, out var uri)) return;
                 var path = uri.AbsolutePath;
                 if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("/plugins/", StringComparison.OrdinalIgnoreCase))
-                    Diag.Log($"[DSH WEB] <- {(int)response.Response.StatusCode} {response.Request.Method} {path}{uri.Query}");
+                    Diag.Log($"[DSH WEB] <- {(int)response.Response.StatusCode} {response.Request.Method} {path}{(string.IsNullOrEmpty(uri.Query) ? "" : "?[redacted]")}");
             }
             catch { }
         };
@@ -528,29 +526,87 @@ public sealed class MainForm : Form
             var msg = $"页面加载: 成功={e.IsSuccess} HTTP={e.HttpStatusCode} 错误={e.WebErrorStatus}";
             Diag.Log(msg);
             _host.AppendLog(msg);
-            if (e.IsSuccess) SafeUi(HideLoading);
+            if (e.HttpStatusCode == 401)
+            {
+                _navFailures = 0;
+                ShowStartupAuthNotice();
+                return;
+            }
+            if (e.IsSuccess)
+            {
+                _navFailures = 0;
+                _startupAuthNoticeShown = false;
+                SafeUi(HideLoading);
+            }
         };
         // 导航失败自动重试（连接类错误，指数退避；用户/守卫取消的导航不重试）
         cwv.NavigationCompleted += OnNavigationFailedRetry;
         Diag.Log("EnsureWebView2Async done");
     }
 
-    private void Navigate(string url)
+    private async Task NavigateAsync(string url)
     {
         if (_quitting || _web.CoreWebView2 == null) return;
         var target = new Uri(url);
-        _host.AppendLog("导航到: " + target.GetLeftPart(UriPartial.Path) + (string.IsNullOrEmpty(target.Query) ? "" : "?[redacted]"));
+        var core = _web.CoreWebView2;
+        if (DshStartupUrl.HasToken(url))
+            await ClearLoopbackCookiesAsync(core);
+        if (_quitting || IsDisposed || _web.CoreWebView2 != core) return;
+
+        _host.AppendLog("导航到: " + DshStartupUrl.Redact(url));
         var sameOrigin = _web.Source != null
             && string.Equals(_web.Source.GetLeftPart(UriPartial.Authority),
                 target.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
         if (sameOrigin && string.IsNullOrEmpty(target.Query))
-        {
             _web.Reload();
-        }
         else
-        {
             _web.Source = target;
-        }
+    }
+
+    private void ShowStartupAuthNotice()
+    {
+        if (_startupAuthNoticeShown || _quitting) return;
+        _startupAuthNoticeShown = true;
+        SafeUi(() =>
+        {
+            HideLoading();
+            if (_quitting) return;
+            using var dialog = new DshStartupTokenDialog();
+            var result = dialog.ShowDialog(this);
+            var token = dialog.Token;
+            if (result != DialogResult.OK || string.IsNullOrWhiteSpace(token))
+            {
+                _startupAuthNoticeShown = false;
+                return;
+            }
+
+            var baseUrl = _host.CurrentUrl;
+            if (string.IsNullOrWhiteSpace(baseUrl))
+                baseUrl = _web.Source?.GetLeftPart(UriPartial.Path);
+            if (string.IsNullOrWhiteSpace(baseUrl))
+            {
+                _startupAuthNoticeShown = false;
+                MessageBox.Show(this, DshStartupAuthMessages.TokenRetryFailed, DshStartupAuthMessages.Title,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                var authenticatedUrl = DshStartupUrl.WithToken(baseUrl, token);
+                _host.SetStartupUrl(authenticatedUrl);
+                _startupAuthNoticeShown = false;
+                ShowLoading(DshStartupAuthMessages.TokenRetryLoading);
+                _ = NavigateAsync(authenticatedUrl);
+            }
+            catch (Exception ex)
+            {
+                _startupAuthNoticeShown = false;
+                Diag.Log("Unable to compose user-supplied DSH startup URL: " + ex.GetType().Name);
+                MessageBox.Show(this, DshStartupAuthMessages.TokenRetryFailed, DshStartupAuthMessages.Title,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        });
     }
 
     /// <summary>拦截 dsh 外部链接：按设置打开独立 WebView2 或系统浏览器。</summary>
@@ -591,7 +647,7 @@ public sealed class MainForm : Form
             _navFailures = 0;
             return;
         }
-        if (e.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled || _quitting) return;
+        if (e.HttpStatusCode == 401 || e.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled || _quitting) return;
         _navFailures++;
         if (_navFailures > MaxNavRetries)
         {

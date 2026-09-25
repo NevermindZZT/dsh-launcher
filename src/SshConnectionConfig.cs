@@ -18,7 +18,7 @@ public sealed class SshConnectionConfig
     public int LocalPort { get; set; } = 3080;
     /// <summary>远端 dsh 监听端口（0 = 自动探测空闲端口；多用户服务器建议 0，避免多个 dsh 实例端口冲突）。</summary>
     public int RemotePort { get; set; } = 0;
-    /// <summary>启动器关闭时是否停止远端 dsh（false = 保持运行，下次秒连）。</summary>
+    /// <summary>启动器关闭时是否停止本连接启动的远端 dsh；复用的外部实例始终保留运行。</summary>
     public bool StopRemoteOnClose { get; set; } = true;
     /// <summary>远端 node 可执行文件路径（空 = 自动探测）。</summary>
     public string RemoteNode { get; set; } = "";

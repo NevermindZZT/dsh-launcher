@@ -193,6 +193,11 @@ public sealed class ManagerConnectionWindow : Form
             var controller = controllerField?.GetValue(_web) as CoreWebView2Controller;
             if (controller != null) controller.AcceleratorKeyPressed += (_, key) =>
             {
+                if (BrowserMouseNavigationGuard.IsBrowserNavigationKey((int)key.VirtualKey))
+                {
+                    key.Handled = true;
+                    return;
+                }
                 var ctrl = (GetKeyState(0x11) & 0x8000) != 0;
                 var shift = (GetKeyState(0x10) & 0x8000) != 0;
                 if (!ctrl || !shift) return;
@@ -246,7 +251,11 @@ public sealed class ManagerConnectionWindow : Form
 
     protected override void WndProc(ref Message m)
     {
-        if (BrowserMouseNavigationGuard.TryHandle(ref m)) return;
+        if (BrowserMouseNavigationGuard.TryHandle(m.Msg, m.WParam, m.LParam, out var browserResult))
+        {
+            m.Result = browserResult;
+            return;
+        }
         if (_captionChrome?.TryHandleWindowMessage(ref m) == true) return;
         base.WndProc(ref m);
     }

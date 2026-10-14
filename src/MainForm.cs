@@ -725,7 +725,11 @@ public sealed class MainForm : Form
 
     protected override void WndProc(ref Message m)
     {
-        if (BrowserMouseNavigationGuard.TryHandle(ref m)) return;
+        if (BrowserMouseNavigationGuard.TryHandle(m.Msg, m.WParam, m.LParam, out var browserResult))
+        {
+            m.Result = browserResult;
+            return;
+        }
         if (_captionChrome?.TryHandleWindowMessage(ref m) == true) return;
         base.WndProc(ref m);
     }
@@ -755,6 +759,11 @@ public sealed class MainForm : Form
     /// <summary>WebView2 焦点下的快捷键：Chromium 优先消费 Ctrl+Shift 组合键，这里接管并标记 Handled。</summary>
     private void OnAcceleratorKeyPressed(object? sender, CoreWebView2AcceleratorKeyPressedEventArgs e)
     {
+        if (BrowserMouseNavigationGuard.IsBrowserNavigationKey((int)e.VirtualKey))
+        {
+            e.Handled = true;
+            return;
+        }
         var ctrl = (GetKeyState(0x11) & 0x8000) != 0; // VK_CONTROL
         var shift = (GetKeyState(0x10) & 0x8000) != 0; // VK_SHIFT
         if (!ctrl || !shift) return;

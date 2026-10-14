@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../src/DshStartupUrl.cs" Link="DshStartupUrl.cs" />
+    <Compile Include="../src/BrowserMouseNavigationGuard.cs" Link="BrowserMouseNavigationGuard.cs" />
   </ItemGroup>
 </Project>

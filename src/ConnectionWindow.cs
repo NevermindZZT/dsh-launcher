@@ -569,7 +569,11 @@ public sealed class ConnectionWindow : Form
 
     protected override void WndProc(ref Message m)
     {
-        if (BrowserMouseNavigationGuard.TryHandle(ref m)) return;
+        if (BrowserMouseNavigationGuard.TryHandle(m.Msg, m.WParam, m.LParam, out var browserResult))
+        {
+            m.Result = browserResult;
+            return;
+        }
         if (_captionChrome?.TryHandleWindowMessage(ref m) == true) return;
         base.WndProc(ref m);
     }
@@ -597,6 +601,11 @@ public sealed class ConnectionWindow : Form
 
     private void OnAcceleratorKeyPressed(object? sender, CoreWebView2AcceleratorKeyPressedEventArgs e)
     {
+        if (BrowserMouseNavigationGuard.IsBrowserNavigationKey((int)e.VirtualKey))
+        {
+            e.Handled = true;
+            return;
+        }
         var ctrl = (GetKeyState(0x11) & 0x8000) != 0;
         var shift = (GetKeyState(0x10) & 0x8000) != 0;
         if (!ctrl || !shift) return;

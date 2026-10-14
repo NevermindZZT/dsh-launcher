@@ -32,7 +32,16 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
         Diag.Log("ApplicationConfiguration.Initialize done");
-        Application.Run(new MainForm());
+        var browserMouseNavigationFilter = new BrowserMouseNavigationMessageFilter();
+        Application.AddMessageFilter(browserMouseNavigationFilter);
+        try
+        {
+            Application.Run(new MainForm());
+        }
+        finally
+        {
+            Application.RemoveMessageFilter(browserMouseNavigationFilter);
+        }
         Diag.Log("Application.Run returned");
     }
 }

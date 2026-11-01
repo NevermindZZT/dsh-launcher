@@ -31,7 +31,7 @@ public sealed class ManagerAgent : IAsyncDisposable
     // assets. DSH data/control endpoints retain the established HTTP transport.
     private const int ProxyBufferSize = 64 * 1024;
     private const int MaxConcurrentProxyHttpOperations = 16;
-    private const int MaxProxyRequestBodyBytes = 8 * 1024 * 1024;
+    private const int MaxProxyRequestBodyBytes = 64 * 1024 * 1024;
     private const int MaxProxyResponseBytes = 32 * 1024 * 1024;
     private static readonly TimeSpan ProxyHttpTimeout = TimeSpan.FromSeconds(60);
 
@@ -245,7 +245,7 @@ public sealed class ManagerAgent : IAsyncDisposable
             }
             else if (frame?.Type == "proxy_request_chunk_binary")
             {
-                AppendProxyHttpRequestBody(frame.RequestId, payload[(separator + 1)..]);
+                await AppendProxyHttpRequestBodyAsync(frame.RequestId, payload[(separator + 1)..], ct);
             }
         }
         catch (Exception ex) { _log("[Manager] 处理二进制 manager 消息失败: " + ex.Message); }
@@ -469,9 +469,10 @@ public sealed class ManagerAgent : IAsyncDisposable
         if (_proxyHttpOperations.TryGetValue(requestId, out var operation)) operation.Cancel();
     }
 
-    private void AppendProxyHttpRequestBody(string requestId, byte[] chunk)
+    private async Task AppendProxyHttpRequestBodyAsync(string requestId, byte[] chunk, CancellationToken ct)
     {
-        if (!_proxyHttpOperations.TryGetValue(requestId, out var operation) || !operation.TryAppendRequestBody(chunk, out var error)) return;
+        if (!_proxyHttpOperations.TryGetValue(requestId, out var operation)) return;
+        var error = await operation.AppendRequestBodyAsync(chunk, ct);
         if (error != null) _log("[Manager] 流式代理请求中止: " + requestId + " " + error.Message);
     }
 
@@ -569,7 +570,7 @@ public sealed class ManagerAgent : IAsyncDisposable
 
     private sealed class ProxyHttpOperation : IDisposable
     {
-        private const int RequestBodyQueueChunks = 8;
+        private const int RequestBodyQueueChunks = 256;
         private long _requestBodyBytes;
         private int _requestBodyCompleted;
         private readonly Channel<byte[]>? _requestBody;
@@ -588,26 +589,32 @@ public sealed class ManagerAgent : IAsyncDisposable
                 { FullMode = BoundedChannelFullMode.Wait, SingleReader = true, AllowSynchronousContinuations = false });
         }
 
-        public bool TryAppendRequestBody(byte[] chunk, out Exception? error)
+        public async ValueTask<Exception?> AppendRequestBodyAsync(byte[] chunk, CancellationToken ct)
         {
-            error = null;
-            if (_requestBody == null || Volatile.Read(ref _requestBodyCompleted) != 0) return false;
+            if (_requestBody == null || Volatile.Read(ref _requestBodyCompleted) != 0) return null;
             if (chunk.Length == 0 || chunk.Length > ProxyBufferSize)
             {
-                error = new InvalidOperationException("invalid streamed proxy request chunk");
-                CompleteRequestBody(error);
-                return false;
+                var err = new InvalidOperationException("invalid streamed proxy request chunk");
+                CompleteRequestBody(err);
+                return err;
             }
             if (Interlocked.Add(ref _requestBodyBytes, chunk.Length) > MaxProxyRequestBodyBytes)
             {
-                error = new ProxyPayloadTooLargeException();
-                CompleteRequestBody(error);
-                return false;
+                var err = new ProxyPayloadTooLargeException();
+                CompleteRequestBody(err);
+                return err;
             }
-            if (_requestBody.Writer.TryWrite(chunk)) return true;
-            error = new InvalidOperationException("streamed proxy request exceeded bounded buffer");
-            CompleteRequestBody(error);
-            return false;
+            if (_requestBody.Writer.TryWrite(chunk)) return null;
+            try
+            {
+                await _requestBody.Writer.WriteAsync(chunk, ct);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                CompleteRequestBody(ex);
+                return ex;
+            }
         }
 
         public void CompleteRequestBody(Exception? error = null)

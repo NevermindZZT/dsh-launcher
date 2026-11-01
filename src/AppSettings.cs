@@ -22,6 +22,23 @@ public sealed class AppSettings
     /// <summary>每个本地/SSH dsh 实例最近一次的窗口尺寸与最大化状态。</summary>
     public System.Collections.Generic.Dictionary<string, WindowStateSettings> WindowStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public const string StartupModeLocal = LauncherStartupOptions.ModeLocal;
+    public const string StartupModeSsh = LauncherStartupOptions.ModeSsh;
+    public const string StartupModePicker = LauncherStartupOptions.ModePicker;
+    public const string StartupModeTray = LauncherStartupOptions.ModeTray;
+
+    /// <summary>
+    /// 启动行为模式：
+    /// local = 启动本地 DSH 实例（默认，若未安装则友好提示并不退出）；
+    /// ssh = 启动指定的 SSH 远程连接（由 DefaultConnection 指定）；
+    /// picker = 启动时打开连接选择器；
+    /// tray = 仅驻留系统托盘，不自动弹出主窗口。
+    /// </summary>
+    public string StartupMode { get; set; } = StartupModeLocal;
+
+    /// <summary>当 StartupMode 为 ssh 时，默认启动的 SSH 连接名称或标识。</summary>
+    public string? DefaultConnection { get; set; }
+
     /// <summary>SSH 连接配置列表（多主机；本地连接始终存在，SSH 按 AutoConnect 并行连接）。</summary>
     public System.Collections.Generic.List<SshConnectionConfig> SshConnections { get; set; } = new();
 
@@ -43,6 +60,7 @@ public sealed class AppSettings
                     s.ManagerFrontend ??= new ManagerFrontendSettings();
                     s.SshConnections ??= new();
                     s.WindowStates ??= new(StringComparer.OrdinalIgnoreCase);
+                    s.StartupMode = NormalizeStartupMode(s.StartupMode);
                     return s;
                 }
             }
@@ -66,6 +84,14 @@ public sealed class AppSettings
         {
             // 保存失败不致命
         }
+    }
+
+    public static string NormalizeStartupMode(string? mode)
+    {
+        if (string.Equals(mode, StartupModeSsh, StringComparison.OrdinalIgnoreCase)) return StartupModeSsh;
+        if (string.Equals(mode, StartupModePicker, StringComparison.OrdinalIgnoreCase)) return StartupModePicker;
+        if (string.Equals(mode, StartupModeTray, StringComparison.OrdinalIgnoreCase)) return StartupModeTray;
+        return StartupModeLocal;
     }
 
     /// <summary>同步开机自启注册表项。</summary>

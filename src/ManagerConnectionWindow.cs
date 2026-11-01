@@ -88,6 +88,7 @@ public sealed class ManagerConnectionWindow : Form
         _captionChrome.AddButton("关于", _main.ShowAboutFromChild);
 
         FormClosing += (_, _) => { _main.SaveWindowStateFor(this, WindowStateKey); _quitting = true; };
+        FormClosed += (_, _) => _main.OnChildWindowClosed();
     }
 
     protected override async void OnShown(EventArgs e)

@@ -88,3 +88,25 @@ Check(
 Check(
     !BrowserMouseNavigationGuard.TryHandle(0x0100, new IntPtr(0x25), IntPtr.Zero, out _),
     "leave ordinary arrow keys untouched");
+
+// LauncherStartupOptions checks
+var defaultOpt = LauncherStartupOptions.Parse(Array.Empty<string>());
+Check(defaultOpt.ModeOverride == null && defaultOpt.TargetConnectionName == null, "parse empty arguments");
+
+var localOpt = LauncherStartupOptions.Parse(new[] { "--local" });
+Check(localOpt.ModeOverride == LauncherStartupOptions.ModeLocal, "parse --local argument");
+
+var pickerOpt = LauncherStartupOptions.Parse(new[] { "--picker" });
+Check(pickerOpt.ModeOverride == LauncherStartupOptions.ModePicker, "parse --picker argument");
+
+var trayOpt = LauncherStartupOptions.Parse(new[] { "--tray" });
+Check(trayOpt.ModeOverride == LauncherStartupOptions.ModeTray, "parse --tray argument");
+
+var sshOpt = LauncherStartupOptions.Parse(new[] { "--ssh", "Server Alpha" });
+Check(sshOpt.ModeOverride == LauncherStartupOptions.ModeSsh && sshOpt.TargetConnectionName == "Server Alpha", "parse --ssh <name> argument");
+
+var sshEqOpt = LauncherStartupOptions.Parse(new[] { "--ssh=Server Beta" });
+Check(sshEqOpt.ModeOverride == LauncherStartupOptions.ModeSsh && sshEqOpt.TargetConnectionName == "Server Beta", "parse --ssh=<name> argument");
+
+var remoteOpt = LauncherStartupOptions.Parse(new[] { "--remote", "Server Gamma" });
+Check(remoteOpt.ModeOverride == LauncherStartupOptions.ModeSsh && remoteOpt.TargetConnectionName == "Server Gamma", "parse --remote <name> argument");

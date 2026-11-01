@@ -177,9 +177,12 @@ internal static class WebModalRouter
     }else if(page==='logs'){
       body='<textarea id="logbox" readonly>'+esc(m.history||'')+'</textarea><div class="actions"><button id="clear">'+t('清空','Clear')+'</button></div>';
     }else if(page==='ssh'){
-      body='<div class="actions"><button class="primary" id="add">'+t('新增 SSH','Add SSH')+'</button></div><div class="items">'+(m.ssh||[]).map(function(x){
+      body='<div class="actions"><button class="primary" id="add">'+t('新增 SSH','Add SSH')+'</button>'+
+        (m.startupMode==='ssh'?'<button id="ssh-reset-default">'+t('恢复默认启动本地','Reset to Local Startup')+'</button>':'')+
+        '</div><div class="items">'+(m.ssh||[]).map(function(x){
         var n=x.name||x.Name;
-        return '<div class="item"><div><b>'+esc(n)+'</b><span>'+esc((x.user||x.User)+'@'+(x.host||x.Host))+':'+(x.port||x.Port)+'</span></div><div><button data-edit="'+esc(n)+'">'+t('编辑','Edit')+'</button><button data-del="'+esc(n)+'">'+t('删除','Delete')+'</button><button class="primary" data-connect="'+esc(n)+'">'+t('连接','Connect')+'</button></div></div>';
+        var isDef=(m.startupMode==='ssh'&&m.defaultConnection===n);
+        return '<div class="item"><div><b>'+esc(n)+'</b>'+(isDef?' <span style="display:inline-block;margin-left:6px;background:#004b70;color:#60cdff;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;">'+t('默认启动','Default')+'</span>':'')+'<span>'+esc((x.user||x.User)+'@'+(x.host||x.Host))+':'+(x.port||x.Port)+'</span></div><div><button data-edit="'+esc(n)+'">'+t('编辑','Edit')+'</button><button data-del="'+esc(n)+'">'+t('删除','Delete')+'</button>'+(!isDef?'<button data-set-default="'+esc(n)+'">'+t('设为默认','Set Default')+'</button>':'')+'<button class="primary" data-connect="'+esc(n)+'">'+t('连接','Connect')+'</button></div></div>';
       }).join('')+'</div>';
     }else if(page==='ssh-edit'){
       var c=m.config||{};
@@ -270,6 +273,8 @@ internal static class WebModalRouter
       else if(el.id==='add')send('ssh.form',{mode:'add'});
       else if(el.dataset.edit)send('ssh.form',{mode:'edit',name:el.dataset.edit});
       else if(el.dataset.del)send('ssh.delete',{name:el.dataset.del});
+      else if(el.dataset.setDefault)send('ssh.setDefault',{name:el.dataset.setDefault});
+      else if(el.id==='ssh-reset-default')send('ssh.setDefaultLocal');
       else if(el.dataset.connect)send('ssh.connect',{name:el.dataset.connect});
     };
     o.addEventListener('keydown',function(e){if(e.key==='Escape')close();});

@@ -10,14 +10,15 @@ internal static class Program
     private const string ShowEventName = "Local\\DshLauncher_ShowWindow";
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         Diag.Log("Program.Main start");
+        var options = LauncherStartupOptions.Parse(args);
         using var mutex = new Mutex(true, MutexName, out bool createdNew);
         Diag.Log($"mutex createdNew={createdNew}");
         if (!createdNew)
         {
-            // 已有实例在运行：通知它显示主窗口，然后本实例退出（不再弹提示）
+            // 已有实例在运行：通知它激活窗口，然后本实例退出（不再弹提示）
             try
             {
                 using var evt = EventWaitHandle.OpenExisting(ShowEventName);
@@ -36,7 +37,8 @@ internal static class Program
         Application.AddMessageFilter(browserMouseNavigationFilter);
         try
         {
-            Application.Run(new MainForm());
+            var context = new LauncherApplicationContext(options);
+            Application.Run(context);
         }
         finally
         {

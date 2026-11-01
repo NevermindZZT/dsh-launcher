@@ -87,6 +87,7 @@ public sealed class ConnectionWindow : Form
             _quitting = true;
             try { _conn.StopAsync().GetAwaiter().GetResult(); } catch { }
         };
+        FormClosed += (_, _) => _main.OnChildWindowClosed();
     }
 
     protected override async void OnShown(EventArgs e)
@@ -279,7 +280,7 @@ public sealed class ConnectionWindow : Form
                         else
                         {
                             _main.SaveSshConnection(cfg, original);
-                            WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
+                            WebModalRouter.Open(_web, "ssh", _main.SshModalPayload());
                         }
                     }
                     catch (Exception ex) { MessageBox.Show(this, ex.Message, "SSH 配置保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -290,7 +291,25 @@ public sealed class ConnectionWindow : Form
                     if (_main != null && payload.TryGetProperty("name", out var n) && !string.IsNullOrWhiteSpace(n.GetString()))
                     {
                         _main.DeleteSshConnection(n.GetString()!);
-                        WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
+                        WebModalRouter.Open(_web, "ssh", _main.SshModalPayload());
+                    }
+                    return;
+                }
+                if (action == "ssh.setDefault")
+                {
+                    if (_main != null && payload.TryGetProperty("name", out var n) && !string.IsNullOrWhiteSpace(n.GetString()))
+                    {
+                        _main.SetDefaultSshConnection(n.GetString()!);
+                        WebModalRouter.Open(_web, "ssh", _main.SshModalPayload());
+                    }
+                    return;
+                }
+                if (action == "ssh.setDefaultLocal")
+                {
+                    if (_main != null)
+                    {
+                        _main.SetDefaultLocalConnection();
+                        WebModalRouter.Open(_web, "ssh", _main.SshModalPayload());
                     }
                     return;
                 }
@@ -317,7 +336,7 @@ public sealed class ConnectionWindow : Form
                     case "logs": OpenRemoteLogs(); break;
                     case "plugins": _main.ShowPluginsFromChild(); break;
                     case "ssh":
-                        WebModalRouter.Open(_web, "ssh", new { page = "ssh", ssh = _main.SshConnectionSnapshot() });
+                        WebModalRouter.Open(_web, "ssh", _main.SshModalPayload());
                         break;
                     case "restart": _ = RestartAsync(); break;
                     case "about": _ = ShowAboutAsync(); break;

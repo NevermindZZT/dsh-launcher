@@ -48,6 +48,9 @@ public sealed class MainForm : Form
     private bool _quitting;
     private bool _loadingHiddenGuard;
     private bool _startupAuthNoticeShown;
+    private readonly LauncherStartupOptions _options;
+    private readonly LauncherApplicationContext? _appContext;
+    private bool _localStarted;
 
     /// <summary>当前是否为 SSH 远程连接。</summary>
     /// <summary>当前活动连接（多连接下指向 Tab 当前项，现有代码继续用 _host 引用）。</summary>
@@ -66,8 +69,14 @@ public sealed class MainForm : Form
         ForeColor = Color.FromArgb(0x9E, 0x9E, 0x9E),
     };
 
-    public MainForm()
+    public MainForm() : this(new LauncherStartupOptions(), null)
     {
+    }
+
+    public MainForm(LauncherStartupOptions options, LauncherApplicationContext? appContext)
+    {
+        _options = options;
+        _appContext = appContext;
         Diag.Log("MainForm ctor start");
         _connections.BuildFrom(_settings);
         _managerFrontend = new ManagerFrontendClient(_settings);
@@ -109,6 +118,14 @@ public sealed class MainForm : Form
         Icon = LoadAppIcon();
         KeyPreview = true;
 
+        var targetMode = _options.ModeOverride ?? _settings.StartupMode ?? AppSettings.StartupModeLocal;
+        if (targetMode != AppSettings.StartupModeLocal)
+        {
+            ShowInTaskbar = false;
+            WindowState = FormWindowState.Minimized;
+            Opacity = 0;
+        }
+
         // WebView2 独占窗口内容（无工具栏/状态栏）
         _web.Dock = DockStyle.Fill;
         Controls.Add(_web);
@@ -126,6 +143,7 @@ public sealed class MainForm : Form
             _loadingText.Height = 36;
         };
         Controls.Add(_loadingOverlay);
+        CreateHandle();
         _captionChrome = NativeCaptionChrome.Attach(this, Icon);
         _captionChrome.AddButton("设置", ShowSettingsForm);
         _captionChrome.AddButton("Manager", () => _ = ShowManagerAsync());
@@ -145,29 +163,12 @@ public sealed class MainForm : Form
         };
         ThemeHelper.PagePaletteChanged += OnPagePaletteChanged;
         _notifications = new WindowsNotificationService(_tray);
-        _trayMenuEntries.Add(new TrayMenuEntry("打开主窗口", ShowMainWindow));
-        // SSH 连接窗口（显示/激活）
-        foreach (var c in _connections.Connections.Skip(1))
-        {
-            var conn = c;
-            _trayMenuEntries.Add(new TrayMenuEntry("SSH: " + conn.DisplayName, () => ShowOrOpenRemoteWindow(conn)));
-        }
-        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
-        _trayMenuEntries.Add(new TrayMenuEntry("重启宿主  (Ctrl+Shift+R)", () => _ = RestartHostAsync()));
-        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
-        _trayMenuEntries.Add(new TrayMenuEntry("日志  (Ctrl+Shift+L)", () => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() })));
-        _trayMenuEntries.Add(new TrayMenuEntry("插件管理  (Ctrl+Shift+P)", () => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true })));
-        _trayMenuEntries.Add(new TrayMenuEntry("设置  (Ctrl+Shift+S)", ShowSettingsForm));
-        _trayMenuEntries.Add(new TrayMenuEntry("dsh-manager  (Ctrl+Shift+M)", () => _ = ShowManagerAsync()));
-        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
-        _trayMenuEntries.Add(new TrayMenuEntry("更新 dsh…", () => _ = UpdateDshAsync()));
-        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
-        _trayMenuEntries.Add(new TrayMenuEntry("退出  (Ctrl+Shift+Q)", OnQuit));
+        BuildTrayMenuEntries();
         _tray.MouseUp += (_, e) =>
         {
             if (e.Button == MouseButtons.Right) ShowTrayMenu();
         };
-        _tray.DoubleClick += (_, _) => ShowMainWindow();
+        _tray.DoubleClick += (_, _) => ActivateTopmostWindow();
 
         // 本地连接事件（SSH 连接由各自的 ConnectionWindow 订阅处理）
         var local = _connections.Local;
@@ -201,7 +202,7 @@ public sealed class MainForm : Form
                 {
                     try { _showEvent.WaitOne(); }
                     catch { break; }
-                    if (!_quitting) ShowMainWindow();
+                    if (!_quitting) ActivateTopmostWindow();
                 }
             })
             { IsBackground = true };
@@ -211,6 +212,8 @@ public sealed class MainForm : Form
         {
             // 事件创建失败（权限等）不阻塞启动
         }
+
+        BeginInvoke(new Action(async () => await InitializeStartupAsync()));
 
         FormClosed += (_, _) =>
         {
@@ -282,13 +285,19 @@ public sealed class MainForm : Form
         if (win != null && !win.IsDisposed)
         {
             win.Show();
+            win.WindowState = FormWindowState.Normal;
             win.Activate();
             return;
         }
         win = new ConnectionWindow(conn, this);
         _remoteWindows.Add(win);
-        win.FormClosed += (_, _) => _remoteWindows.Remove(win);
+        win.FormClosed += (_, _) =>
+        {
+            _remoteWindows.Remove(win);
+            OnChildWindowClosed();
+        };
         win.Show();
+        win.Activate();
     }
 
     /// <summary>Ctrl+Shift+C：循环激活 SSH 连接窗口（再次按下回到主窗口）。</summary>
@@ -298,7 +307,29 @@ public sealed class MainForm : Form
         // 打开前同步最新连接配置（设置中添加的服务器立即生效）。
         // 即使当前没有 SSH 连接也必须打开空列表弹窗，否则用户无法进入「新增 SSH」。
         _connections.SyncFrom(_settings); _interactions.RefreshConnections(_connections.Connections);
-        ShowMainModal("ssh", new { page = "ssh", ssh = _settings.SshConnections });
+        ShowMainModal("ssh", SshModalPayload());
+    }
+
+    internal object SshModalPayload() => new
+    {
+        page = "ssh",
+        ssh = _settings.SshConnections.ToList(),
+        defaultConnection = _settings.DefaultConnection ?? "",
+        startupMode = _settings.StartupMode ?? AppSettings.StartupModeLocal
+    };
+
+    internal void SetDefaultSshConnection(string name)
+    {
+        _settings.StartupMode = AppSettings.StartupModeSsh;
+        _settings.DefaultConnection = name;
+        _settings.Save();
+    }
+
+    internal void SetDefaultLocalConnection()
+    {
+        _settings.StartupMode = AppSettings.StartupModeLocal;
+        _settings.DefaultConnection = "";
+        _settings.Save();
     }
 
     /// <summary>连接本地（供选择器/托盘调用）。</summary>
@@ -347,53 +378,170 @@ public sealed class MainForm : Form
         }
     }
 
-    protected override async void OnShown(EventArgs e)
+    protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        Diag.Log("OnShown begin, runtime=" + (WebView2Runtime.InstalledVersion() ?? "null"));
-        if (!WebView2Runtime.EnsureInstalled(this)) return;
-        ShowLoading("正在启动 DeepSeek Harness…");
+        Diag.Log("MainForm OnShown");
+        ThemeHelper.ApplyWindowTheme(Handle, true);
+    }
+
+    private void ActivateTopmostWindow()
+    {
+        SafeUi(() =>
+        {
+            var remote = _remoteWindows.LastOrDefault(w => w.Visible && !w.IsDisposed);
+            if (remote != null)
+            {
+                remote.WindowState = FormWindowState.Normal;
+                remote.Activate();
+                return;
+            }
+            if (Visible && WindowState != FormWindowState.Minimized && ShowInTaskbar && Opacity > 0.01)
+            {
+                WindowState = FormWindowState.Normal;
+                Activate();
+                return;
+            }
+            ShowMainWindow();
+        });
+    }
+
+    private void ShowMainWindowOnly()
+    {
+        ShowInTaskbar = true;
+        Opacity = 1;
+        Show();
+        WindowState = FormWindowState.Normal;
+        Activate();
+        BringToFront();
+    }
+
+    public void ShowMainWindow()
+    {
+        SafeUi(async () =>
+        {
+            await EnsureStartLocalAsync();
+        });
+    }
+
+    public async Task<bool> EnsureStartLocalAsync()
+    {
+        if (_localStarted && _connections.Local.State == HostState.Running)
+        {
+            ShowMainWindowOnly();
+            return true;
+        }
+
+        if (!DshUpdater.IsInstalled())
+        {
+            var hasSsh = _settings.SshConnections.Count > 0;
+            var msg = "未检测到本地 dsh（DeepSeek Harness）。\n\n" +
+                      "启动器需要 dsh 提供本地服务。是否现在自动安装？\n" +
+                      "（等价于执行：npm install -g @deepseek-ai/dsh）\n\n" +
+                      (hasSsh
+                          ? "• 点击【是】：自动安装本地 dsh\n• 点击【否】：切换至 SSH 远程连接\n• 点击【取消】：暂不启动本地服务"
+                          : "• 点击【是】：自动安装本地 dsh\n• 点击【否】：打开连接配置以添加 SSH 远程连接\n• 点击【取消】：暂不启动本地服务");
+
+            var res = MessageBox.Show(this, msg, "未检测到本地 dsh",
+                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+
+            if (res == DialogResult.Yes)
+            {
+                await InstallDshAndContinueAsync();
+                if (_quitting || !DshUpdater.IsInstalled()) return false;
+            }
+            else if (res == DialogResult.No)
+            {
+                ShowConnectionPicker();
+                return false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        ShowMainWindowOnly();
+        ShowLoading("正在启动本地 DeepSeek Harness…");
         try
         {
             await EnsureWebView2Async();
-
-            // 未安装 dsh → 引导安装（本地连接需要）
-            if (!DshUpdater.IsInstalled())
-            {
-                var res = MessageBox.Show(this,
-                    "未检测到 dsh（DeepSeek Harness）。\n\n" +
-                    "启动器需要 dsh 提供本地服务。是否现在自动安装？\n" +
-                    "（等价于执行：npm install -g @deepseek-ai/dsh）",
-                    "需要安装 dsh", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (res == DialogResult.Yes)
-                {
-                    await InstallDshAndContinueAsync();
-                    if (_quitting) return;
-                }
-                else
-                {
-                    MessageBox.Show(this,
-                        "未安装 dsh，启动器无法启动服务。\n请先安装 Node.js，然后执行：npm install -g @deepseek-ai/dsh",
-                        "需要安装 dsh", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    OnQuit();
-                    return;
-                }
-            }
-
-            // 启动本地连接（主窗口）；导航统一由本地 Ready 事件触发（避免双导航竞争导致页面空白）。
-            // 远程 SSH 连接不自动打开 —— 按需用 Ctrl+Shift+C 选择器或托盘菜单连接。
             _current = _connections.Local;
-            await _current.StartAsync();
-            _ = _managerAgent.StartAsync();
-
-            // 启动后异步检查 dsh 更新
-            _ = CheckForUpdateAsync();
+            if (!_localStarted)
+            {
+                _localStarted = true;
+                await _current.StartAsync();
+                _ = CheckForUpdateAsync();
+            }
+            return true;
         }
         catch (Exception ex)
         {
             HideLoading();
-            MessageBox.Show(this, GetHostFailureMessage(ex), "DshLauncher 启动失败",
+            MessageBox.Show(this, GetHostFailureMessage(ex), "启动本地服务失败",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+    }
+
+    private async Task InitializeStartupAsync()
+    {
+        Diag.Log("InitializeStartupAsync begin, runtime=" + (WebView2Runtime.InstalledVersion() ?? "null"));
+        if (!WebView2Runtime.EnsureInstalled(this))
+        {
+            OnQuit();
+            return;
+        }
+
+        _ = _managerAgent.StartAsync();
+
+        var targetMode = _options.ModeOverride ?? _settings.StartupMode ?? AppSettings.StartupModeLocal;
+        Diag.Log($"InitializeStartupAsync targetMode={targetMode}");
+
+        switch (targetMode)
+        {
+            case AppSettings.StartupModeSsh:
+                var targetName = _options.TargetConnectionName ?? _settings.DefaultConnection;
+                var targetConn = _connections.Connections.OfType<SshConnection>().FirstOrDefault(c =>
+                    string.Equals(c.Config.Name, targetName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(c.DisplayName, targetName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(c.Config.Host, targetName, StringComparison.OrdinalIgnoreCase));
+
+                if (targetConn != null)
+                {
+                    ShowOrOpenRemoteWindow(targetConn);
+                }
+                else
+                {
+                    if (_settings.SshConnections.Count > 0)
+                    {
+                        ShowConnectionPicker();
+                    }
+                    else
+                    {
+                        await EnsureStartLocalAsync();
+                    }
+                }
+                break;
+
+            case AppSettings.StartupModePicker:
+                ShowConnectionPicker();
+                break;
+
+            case AppSettings.StartupModeTray:
+                foreach (var sc in _connections.Connections.OfType<SshConnection>())
+                {
+                    if (sc.Config.AutoConnect)
+                    {
+                        ShowOrOpenRemoteWindow(sc);
+                    }
+                }
+                break;
+
+            case AppSettings.StartupModeLocal:
+            default:
+                await EnsureStartLocalAsync();
+                break;
         }
     }
 
@@ -1206,7 +1354,11 @@ public sealed class MainForm : Form
             }
             var window = new ManagerConnectionWindow(this, target, $"{agentId}/{instanceId}", _managerFrontend.GetBrowserCookies());
             _managerWindows.Add(window);
-            window.FormClosed += (_, _) => _managerWindows.Remove(window);
+            window.FormClosed += (_, _) =>
+            {
+                _managerWindows.Remove(window);
+                OnChildWindowClosed();
+            };
             window.Show();
         }
         catch (Exception ex)
@@ -1245,7 +1397,11 @@ public sealed class MainForm : Form
             {
                 _launcherModal = new LauncherModalWindow(_settings);
                 _launcherModal.BrowserMessage += HandleStandaloneModalMessage;
-                _launcherModal.FormClosed += (_, _) => _launcherModal = null;
+                _launcherModal.FormClosed += (_, _) =>
+                {
+                    _launcherModal = null;
+                    OnChildWindowClosed();
+                };
                 _launcherModal.Open(page, data);
                 _launcherModal.Show(this);
             }
@@ -1273,6 +1429,8 @@ public sealed class MainForm : Form
             else if (action == "ssh.form") ShowMainModal("ssh-edit", new { page = "ssh-edit", mode = "add", originalName = "", config = new SshConnectionConfig() });
             else if (action == "ssh.connect" && payload.TryGetProperty("name", out var connect)) OpenSshConnection(connect.GetString() ?? "");
             else if (action == "ssh.delete" && payload.TryGetProperty("name", out var remove)) { DeleteSshConnection(remove.GetString() ?? ""); ShowConnectionPicker(); }
+            else if (action == "ssh.setDefault" && payload.TryGetProperty("name", out var defName)) { SetDefaultSshConnection(defName.GetString() ?? ""); ShowConnectionPicker(); }
+            else if (action == "ssh.setDefaultLocal") { SetDefaultLocalConnection(); ShowConnectionPicker(); }
             else if (action == "ssh.save") { var config = JsonSerializer.Deserialize<SshConnectionConfig>(payload.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); var original = payload.TryGetProperty("originalName", out var existing) ? existing.GetString() : null; if (config != null && !string.IsNullOrWhiteSpace(config.Host) && !string.IsNullOrWhiteSpace(config.User)) SaveSshConnection(config, original); ShowConnectionPicker(); }
             else if (action.StartsWith("plugins.") && payload.ValueKind == JsonValueKind.Object) { var package = payload.TryGetProperty("package", out var item) ? item.GetString() : null; var verb = action[9..]; if (verb == "install" && !string.IsNullOrWhiteSpace(package)) _ = _host.RunPluginAsync(new[] { "add", package }, _host.AppendLog); else if (verb == "remove" && !string.IsNullOrWhiteSpace(package)) _ = _host.RunPluginAsync(new[] { "remove", package }, _host.AppendLog); else if (verb == "update") _ = _host.RunPluginAsync(string.IsNullOrWhiteSpace(package) ? new[] { "update" } : new[] { "update", package }, _host.AppendLog); }
         });
@@ -1295,6 +1453,7 @@ public sealed class MainForm : Form
         window.FormClosed += (_, _) =>
         {
             if (ReferenceEquals(_settingsWindow, window)) _settingsWindow = null;
+            OnChildWindowClosed();
             if (window.DialogResult != DialogResult.OK) return;
             window.Apply();
             ApplyAgentQuestionHandling();
@@ -1588,6 +1747,34 @@ public sealed class MainForm : Form
     /// 关闭窗口：默认隐藏到托盘（宿主保持运行）；设置 CloseExits 时停止宿主并退出。
     /// 托盘「退出」始终真正停止。
     /// </summary>
+    public bool HasVisibleWindows()
+    {
+        if (Visible && WindowState != FormWindowState.Minimized && ShowInTaskbar && Opacity > 0.01) return true;
+        return HasVisibleWindowsExceptMain();
+    }
+
+    public bool HasVisibleWindowsExceptMain()
+    {
+        if (_remoteWindows.Any(w => w.Visible && !w.IsDisposed)) return true;
+        if (_managerWindows.Any(w => w.Visible && !w.IsDisposed)) return true;
+        if (_settingsWindow is { Visible: true, IsDisposed: false }) return true;
+        if (_launcherModal is { Visible: true, IsDisposed: false }) return true;
+        return false;
+    }
+
+    internal void OnChildWindowClosed()
+    {
+        if (_quitting) return;
+        if (_settings.CloseExits && !HasVisibleWindows())
+        {
+            OnQuit();
+        }
+    }
+
+    /// <summary>
+    /// 关闭窗口：默认隐藏到托盘（宿主保持运行）；设置 CloseExits 时停止宿主并退出。
+    /// 托盘「退出」始终真正停止。
+    /// </summary>
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
@@ -1606,11 +1793,50 @@ public sealed class MainForm : Form
             return;
         }
 
-        // Do not block or call Application.Exit inside this first WM_CLOSE pass.
-        // The original close event is otherwise left cancelled and the UI/process can remain alive.
+        // CloseExits is true
+        if (HasVisibleWindowsExceptMain())
+        {
+            e.Cancel = true;
+            Hide();
+            return;
+        }
+
         e.Cancel = true;
         if (IsHandleCreated) BeginInvoke(new Action(OnQuit));
         else _ = OnQuitAsync();
+    }
+
+    private void BuildTrayMenuEntries()
+    {
+        _trayMenuEntries.Clear();
+        _trayMenuEntries.Add(new TrayMenuEntry("本地 DSH", ShowMainWindow));
+        _trayMenuEntries.Add(new TrayMenuEntry("选择连接…  (Ctrl+Shift+C)", ShowConnectionPicker));
+        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+
+        var sshList = _connections.Connections.OfType<SshConnection>().ToList();
+        if (sshList.Count > 0)
+        {
+            foreach (var sc in sshList)
+            {
+                var conn = sc;
+                var isDefault = _settings.StartupMode == AppSettings.StartupModeSsh &&
+                                string.Equals(_settings.DefaultConnection, conn.Config.Name, StringComparison.OrdinalIgnoreCase);
+                var label = "SSH: " + conn.DisplayName + (isDefault ? " [默认]" : "");
+                _trayMenuEntries.Add(new TrayMenuEntry(label, () => ShowOrOpenRemoteWindow(conn)));
+            }
+            _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+        }
+
+        _trayMenuEntries.Add(new TrayMenuEntry("重启宿主  (Ctrl+Shift+R)", () => _ = RestartHostAsync()));
+        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+        _trayMenuEntries.Add(new TrayMenuEntry("日志  (Ctrl+Shift+L)", () => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() })));
+        _trayMenuEntries.Add(new TrayMenuEntry("插件管理  (Ctrl+Shift+P)", () => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true })));
+        _trayMenuEntries.Add(new TrayMenuEntry("设置  (Ctrl+Shift+S)", ShowSettingsForm));
+        _trayMenuEntries.Add(new TrayMenuEntry("dsh-manager  (Ctrl+Shift+M)", () => _ = ShowManagerAsync()));
+        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+        _trayMenuEntries.Add(new TrayMenuEntry("更新 dsh…", () => _ = UpdateDshAsync()));
+        _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
+        _trayMenuEntries.Add(new TrayMenuEntry("退出  (Ctrl+Shift+Q)", OnQuit));
     }
 
     private void ShowTrayMenu()
@@ -1624,6 +1850,7 @@ public sealed class MainForm : Form
                 _trayMenuWindow = null;
                 return;
             }
+            BuildTrayMenuEntries();
             var menu = new ThemedTrayMenuWindow(_trayMenuEntries, ThemeHelper.CurrentPagePalette);
             _trayMenuWindow = menu;
             menu.FormClosed += (_, _) =>
@@ -1631,16 +1858,6 @@ public sealed class MainForm : Form
                 if (ReferenceEquals(_trayMenuWindow, menu)) _trayMenuWindow = null;
             };
             menu.ShowAt(Cursor.Position);
-        });
-    }
-
-    private void ShowMainWindow()
-    {
-        SafeUi(() =>
-        {
-            Show();
-            WindowState = FormWindowState.Normal;
-            Activate();
         });
     }
 
@@ -1656,8 +1873,7 @@ public sealed class MainForm : Form
         foreach (var c in _connections.Connections) { try { await c.StopAsync(); } catch { } }
         try { await _managerAgent.DisposeAsync(); } catch { }
         try { await _interactions.DisposeAsync(); } catch { }
-        // This runs after the original WM_CLOSE handler has returned, so the
-        // _quitting branch above allows the final close pass to complete.
+        _appContext?.RequestExit();
         Application.Exit();
     }
 

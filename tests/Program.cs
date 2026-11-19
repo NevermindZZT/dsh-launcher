@@ -110,3 +110,29 @@ Check(sshEqOpt.ModeOverride == LauncherStartupOptions.ModeSsh && sshEqOpt.Target
 
 var remoteOpt = LauncherStartupOptions.Parse(new[] { "--remote", "Server Gamma" });
 Check(remoteOpt.ModeOverride == LauncherStartupOptions.ModeSsh && remoteOpt.TargetConnectionName == "Server Gamma", "parse --remote <name> argument");
+
+// Shortcut defaults and persisted overrides must agree in every window.
+Check(LauncherShortcuts.Matches(null, "connections", LauncherShortcuts.Control | LauncherShortcuts.Shift | '7'), "connection picker defaults to Ctrl+Shift+7");
+Check(!LauncherShortcuts.Matches(null, "connections", LauncherShortcuts.Control | LauncherShortcuts.Shift | 'C'), "terminal copy is not intercepted by default");
+var shortcuts = new Dictionary<string, string> { ["connections"] = "Ctrl+Alt+F2", ["logs"] = "" };
+Check(LauncherShortcuts.Validate(shortcuts, out _), "valid custom and disabled shortcuts");
+Check(LauncherShortcuts.Matches(shortcuts, "connections", LauncherShortcuts.Control | LauncherShortcuts.Alt | 0x71), "custom shortcut matches exact modifiers");
+Check(!LauncherShortcuts.Matches(shortcuts, "connections", LauncherShortcuts.Control | LauncherShortcuts.Alt | LauncherShortcuts.Shift | 0x71), "additional modifiers do not match");
+Check(!LauncherShortcuts.Matches(shortcuts, "logs", LauncherShortcuts.Control | LauncherShortcuts.Shift | '2'), "disabled shortcut does not match");
+shortcuts["logs"] = "Ctrl+Alt+F2";
+Check(!LauncherShortcuts.Validate(shortcuts, out _), "duplicate shortcuts rejected");
+shortcuts["logs"] = "Ctrl+Bogus+X";
+Check(!LauncherShortcuts.Validate(shortcuts, out _), "invalid shortcuts rejected");
+
+var expectedDefaults = new Dictionary<string, char> {
+    ["connections"] = '7', ["restart"] = '1', ["logs"] = '2', ["plugins"] = '3',
+    ["settings"] = '4', ["manager"] = '5', ["quit"] = '6', ["sync"] = '8', ["folder"] = '9',
+};
+Check(LauncherShortcuts.Validate(null, out _), "numeric default shortcuts are unique");
+Check(LauncherShortcuts.Actions.Length == expectedDefaults.Count, "all actions have expected numeric defaults");
+foreach (var (id, digit) in expectedDefaults)
+    Check(LauncherShortcuts.Matches(null, id, LauncherShortcuts.Control | LauncherShortcuts.Shift | digit), $"{id} defaults to Ctrl+Shift+{digit}");
+foreach (var letter in "CRLPSMQYO")
+    Check(LauncherShortcuts.Actions.All(a => !LauncherShortcuts.Matches(null, a.Id, LauncherShortcuts.Control | LauncherShortcuts.Shift | letter)), $"Ctrl+Shift+{letter} is free by default");
+
+Check(LauncherShortcuts.Actions.Select((action, index) => action.Default == $"Ctrl+Shift+{index + 1}").All(x => x), "settings list defaults follow numerical order");

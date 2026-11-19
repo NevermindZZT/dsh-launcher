@@ -5,6 +5,7 @@ namespace DshLauncher;
 /// <summary>启动器设置，JSON 持久化到 %LOCALAPPDATA%\DshLauncher\settings.json。</summary>
 public sealed class AppSettings
 {
+    public Dictionary<string, string> Shortcuts { get; set; } = new();
     public ManagerSettings Manager { get; set; } = new();
     public ManagerFrontendSettings ManagerFrontend { get; set; } = new();
     public int AttachPort { get; set; } = HostSupervisor.DefaultPort;
@@ -56,6 +57,8 @@ public sealed class AppSettings
                 var s = JsonSerializer.Deserialize<AppSettings>(json);
                 if (s != null)
                 {
+                    s.Shortcuts ??= new();
+                    if (!LauncherShortcuts.Validate(s.Shortcuts, out _)) s.Shortcuts = new();
                     s.Manager ??= new ManagerSettings();
                     s.ManagerFrontend ??= new ManagerFrontendSettings();
                     s.SshConnections ??= new();

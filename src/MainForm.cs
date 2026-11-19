@@ -10,7 +10,7 @@ namespace DshLauncher;
 /// <summary>
 /// 主窗口：标准 Windows 原生标题栏，WebView2 负责 dsh 内容。
 /// 标题栏主题跟随 dsh 页面主题；命令入口通过标题栏右键菜单提供，不额外占用 WebView 高度。
-/// 全部控制入口在托盘菜单与快捷键：Ctrl+Shift+R 重启 / Ctrl+Shift+L 日志 / Ctrl+Shift+P 插件 / Ctrl+Shift+S 设置 / Ctrl+Shift+Q 退出。
+/// 全部控制入口在托盘菜单与可配置的窗口快捷键。
 /// 关闭窗口默认隐藏到托盘（宿主保持运行）；托盘「退出」才停止服务。
 /// </summary>
 public sealed class MainForm : Form
@@ -187,7 +187,7 @@ public sealed class MainForm : Form
         {
             if (!_quitting && Visible)
             {
-                MessageBox.Show(this, diag + "\n\n可用托盘菜单「重启宿主」或 Ctrl+Shift+R 重新启动。", "dsh 异常退出",
+                MessageBox.Show(this, diag + "\n\n可用托盘菜单「重启宿主」或使用重启快捷键重新启动。", "dsh 异常退出",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         });
@@ -300,8 +300,7 @@ public sealed class MainForm : Form
         win.Activate();
     }
 
-    /// <summary>Ctrl+Shift+C：循环激活 SSH 连接窗口（再次按下回到主窗口）。</summary>
-    /// <summary>Ctrl+Shift+C：弹出连接选择器，列出可连接的服务器，选择后连接/打开窗口。</summary>
+    /// <summary>默认 Ctrl+Shift+7：弹出连接选择器，列出可连接的服务器，选择后连接/打开窗口。</summary>
     public void ShowConnectionPicker()
     {
         // 打开前同步最新连接配置（设置中添加的服务器立即生效）。
@@ -804,7 +803,7 @@ public sealed class MainForm : Form
             if (!_quitting)
             {
                 _tray.ShowBalloonTip(6000, "DeepSeek Harness",
-                    "dsh 页面加载失败（服务可能未就绪）。可右键托盘「重启宿主」或按 Ctrl+Shift+R 重试。",
+                    "dsh 页面加载失败（服务可能未就绪）。可右键托盘「重启宿主」或使用重启快捷键重试。",
                     ToolTipIcon.Warning);
             }
             return;
@@ -832,8 +831,7 @@ public sealed class MainForm : Form
     }
 
     /// <summary>
-    /// 快捷键（Ctrl+Shift 组合，避免与 dsh Web UI / 浏览器冲突）：
-    /// Ctrl+Shift+R 重启 / Ctrl+Shift+L 日志 / Ctrl+Shift+P 插件 / Ctrl+Shift+S 设置 / Ctrl+Shift+Q 退出 / Ctrl+Shift+C 连接切换（SSH 模式）。
+    /// 保存和恢复窗口尺寸。
     /// </summary>
     internal void SetWorkAreaMaximizedBounds(Rectangle bounds) => MaximizedBounds = bounds;
 
@@ -891,20 +889,19 @@ public sealed class MainForm : Form
     /// <summary>统一快捷键处理（ProcessCmdKey 与 WebView2 AcceleratorKeyPressed 共用）。</summary>
     private bool HandleShortcut(Keys keyData)
     {
-        switch (keyData)
-        {
-            case Keys.Control | Keys.Shift | Keys.R: _ = RestartHostAsync(); return true;
-            case Keys.Control | Keys.Shift | Keys.L: ShowLogForm(); return true;
-            case Keys.Control | Keys.Shift | Keys.P: ShowPluginsForm(); return true;
-            case Keys.Control | Keys.Shift | Keys.S: ShowSettingsForm(); return true;
-            case Keys.Control | Keys.Shift | Keys.M: _ = ShowManagerAsync(); return true;
-            case Keys.Control | Keys.Shift | Keys.Q: OnQuit(); return true;
-            case Keys.Control | Keys.Shift | Keys.C: ShowConnectionPicker(); return true;
-        }
+        if (ShortcutMatches("restart", keyData)) { _ = RestartHostAsync(); return true; }
+        if (ShortcutMatches("logs", keyData)) { ShowLogForm(); return true; }
+        if (ShortcutMatches("plugins", keyData)) { ShowPluginsForm(); return true; }
+        if (ShortcutMatches("settings", keyData)) { ShowSettingsForm(); return true; }
+        if (ShortcutMatches("manager", keyData)) { _ = ShowManagerAsync(); return true; }
+        if (ShortcutMatches("quit", keyData)) { OnQuit(); return true; }
+        if (ShortcutMatches("connections", keyData)) { ShowConnectionPicker(); return true; }
         return false;
     }
 
-    /// <summary>WebView2 焦点下的快捷键：Chromium 优先消费 Ctrl+Shift 组合键，这里接管并标记 Handled。</summary>
+    internal bool ShortcutMatches(string id, Keys keyData) => LauncherShortcuts.Matches(_settings.Shortcuts, id, (int)keyData);
+
+    /// <summary>WebView2 焦点下的窗口快捷键。</summary>
     private void OnAcceleratorKeyPressed(object? sender, CoreWebView2AcceleratorKeyPressedEventArgs e)
     {
         if (BrowserMouseNavigationGuard.IsBrowserNavigationKey((int)e.VirtualKey))
@@ -912,11 +909,12 @@ public sealed class MainForm : Form
             e.Handled = true;
             return;
         }
-        var ctrl = (GetKeyState(0x11) & 0x8000) != 0; // VK_CONTROL
-        var shift = (GetKeyState(0x10) & 0x8000) != 0; // VK_SHIFT
-        if (!ctrl || !shift) return;
+        if (e.KeyEventKind is not (CoreWebView2KeyEventKind.KeyDown or CoreWebView2KeyEventKind.SystemKeyDown)) return;
         var key = (Keys)e.VirtualKey;
-        if (HandleShortcut(Keys.Control | Keys.Shift | key)) e.Handled = true;
+        if ((GetKeyState(0x11) & 0x8000) != 0) key |= Keys.Control;
+        if ((GetKeyState(0x10) & 0x8000) != 0) key |= Keys.Shift;
+        if ((GetKeyState(0x12) & 0x8000) != 0) key |= Keys.Alt;
+        if (HandleShortcut(key)) e.Handled = true;
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -1806,11 +1804,17 @@ public sealed class MainForm : Form
         else _ = OnQuitAsync();
     }
 
+    private string TrayLabel(string label, string id)
+    {
+        var shortcut = LauncherShortcuts.Get(_settings.Shortcuts, id);
+        return shortcut.Length == 0 ? label : $"{label}  ({shortcut})";
+    }
+
     private void BuildTrayMenuEntries()
     {
         _trayMenuEntries.Clear();
         _trayMenuEntries.Add(new TrayMenuEntry("本地 DSH", ShowMainWindow));
-        _trayMenuEntries.Add(new TrayMenuEntry("选择连接…  (Ctrl+Shift+C)", ShowConnectionPicker));
+        _trayMenuEntries.Add(new TrayMenuEntry(TrayLabel("选择连接…", "connections"), ShowConnectionPicker));
         _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
 
         var sshList = _connections.Connections.OfType<SshConnection>().ToList();
@@ -1827,16 +1831,16 @@ public sealed class MainForm : Form
             _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
         }
 
-        _trayMenuEntries.Add(new TrayMenuEntry("重启宿主  (Ctrl+Shift+R)", () => _ = RestartHostAsync()));
+        _trayMenuEntries.Add(new TrayMenuEntry(TrayLabel("重启宿主", "restart"), () => _ = RestartHostAsync()));
         _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
-        _trayMenuEntries.Add(new TrayMenuEntry("日志  (Ctrl+Shift+L)", () => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() })));
-        _trayMenuEntries.Add(new TrayMenuEntry("插件管理  (Ctrl+Shift+P)", () => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true })));
-        _trayMenuEntries.Add(new TrayMenuEntry("设置  (Ctrl+Shift+S)", ShowSettingsForm));
-        _trayMenuEntries.Add(new TrayMenuEntry("dsh-manager  (Ctrl+Shift+M)", () => _ = ShowManagerAsync()));
+        _trayMenuEntries.Add(new TrayMenuEntry(TrayLabel("日志", "logs"), () => ShowMainModal("logs", new { page = "logs", history = ReadLocalHistory() })));
+        _trayMenuEntries.Add(new TrayMenuEntry(TrayLabel("插件管理", "plugins"), () => ShowMainModal("plugins", new { page = "plugins", plugins = ListLocalPlugins(), canManagePlugins = true })));
+        _trayMenuEntries.Add(new TrayMenuEntry(TrayLabel("设置", "settings"), ShowSettingsForm));
+        _trayMenuEntries.Add(new TrayMenuEntry(TrayLabel("dsh-manager", "manager"), () => _ = ShowManagerAsync()));
         _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
         _trayMenuEntries.Add(new TrayMenuEntry("更新 dsh…", () => _ = UpdateDshAsync()));
         _trayMenuEntries.Add(new TrayMenuEntry(string.Empty, separator: true));
-        _trayMenuEntries.Add(new TrayMenuEntry("退出  (Ctrl+Shift+Q)", OnQuit));
+        _trayMenuEntries.Add(new TrayMenuEntry(TrayLabel("退出", "quit"), OnQuit));
     }
 
     private void ShowTrayMenu()

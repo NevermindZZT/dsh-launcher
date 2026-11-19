@@ -199,10 +199,12 @@ public sealed class ManagerConnectionWindow : Form
                     key.Handled = true;
                     return;
                 }
-                var ctrl = (GetKeyState(0x11) & 0x8000) != 0;
-                var shift = (GetKeyState(0x10) & 0x8000) != 0;
-                if (!ctrl || !shift) return;
-                if ((Keys)key.VirtualKey == Keys.M)
+                if (key.KeyEventKind is not (CoreWebView2KeyEventKind.KeyDown or CoreWebView2KeyEventKind.SystemKeyDown)) return;
+                var shortcut = (Keys)key.VirtualKey;
+                if ((GetKeyState(0x11) & 0x8000) != 0) shortcut |= Keys.Control;
+                if ((GetKeyState(0x10) & 0x8000) != 0) shortcut |= Keys.Shift;
+                if ((GetKeyState(0x12) & 0x8000) != 0) shortcut |= Keys.Alt;
+                if (_main.ShortcutMatches("manager", shortcut))
                 {
                     key.Handled = true;
                     _ = _main.ShowManagerFromChildAsync();

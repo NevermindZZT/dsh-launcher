@@ -3,7 +3,7 @@ using System.Drawing;
 namespace DshLauncher;
 
 /// <summary>
-/// 连接选择器弹窗（Ctrl+Shift+C）：列出本地 + 所有 SSH 连接（名称/状态/地址），
+/// 连接选择器弹窗（默认 Ctrl+Shift+7）：列出本地 + 所有 SSH 连接（名称/状态/地址），
 /// 每个连接一个行按钮，点击即选择 —— 不用 ListView，避免自绘白色/焦点/失焦问题。
 /// </summary>
 public sealed class ConnectionPickerForm : ThemedForm

@@ -7,7 +7,7 @@ namespace DshLauncher;
 
 /// <summary>
 /// SSH 远程连接独立窗口：标准 Windows 原生标题栏，命令入口通过标题栏右键菜单提供；每个连接独立 WebView/user-data 会话。
-/// 快捷键 Ctrl+Shift+R/L/P/Q 作用于本窗口的连接。
+/// 可配置的快捷键作用于本窗口的连接。
 /// </summary>
 public sealed class ConnectionWindow : Form
 {
@@ -605,16 +605,13 @@ public sealed class ConnectionWindow : Form
 
     private bool HandleShortcut(Keys keyData)
     {
-        switch (keyData)
-        {
-            case Keys.Control | Keys.Shift | Keys.R: _ = RestartAsync(); return true;
-            case Keys.Control | Keys.Shift | Keys.L: OpenRemoteLogs(); return true;
-            case Keys.Control | Keys.Shift | Keys.P: _main.ShowPluginsFromChild(); return true;
-            case Keys.Control | Keys.Shift | Keys.C: OpenPicker(); return true;
-            case Keys.Control | Keys.Shift | Keys.Y: _ = SyncFromLocalAsync(); return true;
-            case Keys.Control | Keys.Shift | Keys.O: OpenRemoteFolder(); return true;
-            case Keys.Control | Keys.Shift | Keys.Q: Close(); return true;
-        }
+        if (_main.ShortcutMatches("restart", keyData)) { _ = RestartAsync(); return true; }
+        if (_main.ShortcutMatches("logs", keyData)) { OpenRemoteLogs(); return true; }
+        if (_main.ShortcutMatches("plugins", keyData)) { _main.ShowPluginsFromChild(); return true; }
+        if (_main.ShortcutMatches("connections", keyData)) { OpenPicker(); return true; }
+        if (_main.ShortcutMatches("sync", keyData)) { _ = SyncFromLocalAsync(); return true; }
+        if (_main.ShortcutMatches("folder", keyData)) { OpenRemoteFolder(); return true; }
+        if (_main.ShortcutMatches("quit", keyData)) { Close(); return true; }
         return false;
     }
 
@@ -625,16 +622,18 @@ public sealed class ConnectionWindow : Form
             e.Handled = true;
             return;
         }
-        var ctrl = (GetKeyState(0x11) & 0x8000) != 0;
-        var shift = (GetKeyState(0x10) & 0x8000) != 0;
-        if (!ctrl || !shift) return;
-        if (HandleShortcut(Keys.Control | Keys.Shift | (Keys)e.VirtualKey)) e.Handled = true;
+        if (e.KeyEventKind is not (CoreWebView2KeyEventKind.KeyDown or CoreWebView2KeyEventKind.SystemKeyDown)) return;
+        var key = (Keys)e.VirtualKey;
+        if ((GetKeyState(0x11) & 0x8000) != 0) key |= Keys.Control;
+        if ((GetKeyState(0x10) & 0x8000) != 0) key |= Keys.Shift;
+        if ((GetKeyState(0x12) & 0x8000) != 0) key |= Keys.Alt;
+        if (HandleShortcut(key)) e.Handled = true;
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern short GetKeyState(int nVirtKey);
 
-    /// <summary>Ctrl+Shift+C：由主窗口弹出连接选择器（选择服务器后连接）。</summary>
+    /// <summary>默认 Ctrl+Shift+7：由主窗口弹出连接选择器（选择服务器后连接）。</summary>
     private void OpenPicker()
     {
         if (_main != null)
@@ -653,7 +652,7 @@ public sealed class ConnectionWindow : Form
         OpenRemotePicker(null, path => _ = AddFolderAsync(path));
     }
 
-    /// <summary>Ctrl+Shift+Y：把本地 dsh 配置与插件同步到本服务器，完成后可选重启远端。</summary>
+    /// <summary>把本地 dsh 配置与插件同步到本服务器，完成后可选重启远端。</summary>
     private async Task SyncFromLocalAsync()
     {
         if (_syncing) return; // 防重复触发

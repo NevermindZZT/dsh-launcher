@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../src/LauncherShortcuts.cs" Link="LauncherShortcuts.cs" />
     <Compile Include="../src/DshStartupUrl.cs" Link="DshStartupUrl.cs" />
     <Compile Include="../src/BrowserMouseNavigationGuard.cs" Link="BrowserMouseNavigationGuard.cs" />
     <Compile Include="../src/LauncherStartupOptions.cs" Link="LauncherStartupOptions.cs" />

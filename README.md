@@ -2,7 +2,7 @@
 
 > **Manager transport migration:** dsh-manager now uses one plain HTTP upstream port and does not use private certificates or TLS fingerprints. Use `http://` only on trusted private networks; for public access configure HTTPS/WSS at an external reverse proxy. DSH 0.1.2+ startup URLs carry a process-local one-time token; DshLauncher keeps it in memory for initial navigation and redacts it from launcher logs.
 
-![Version](https://img.shields.io/badge/version-v0.5.0-blue)
+![Version](https://img.shields.io/badge/version-v0.5.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)
@@ -36,7 +36,7 @@
 - **审批与问答交互（预览）**：dsh 原生 Web UI 始终正常显示提问与权限请求；可选独立置顶 WebView2 浮窗会同步显示并直接处理，任一侧处理后另一侧自动关闭。Manager 汇聚审批仍可使用 TopMost 原生浮窗。当前 dsh 的直连观察通道默认关闭，以避免与完整 Web UI 的会话写入器冲突
 - **dsh 直连插件**：不使用 launcher 时，可在 dsh 内安装 [dsh-manager-plugin](https://github.com/NevermindZZT/dsh-manager-plugin)，直接建立 manager 反向连接
 - **Agent 通道**：manager 使用单一 HTTP/WS 端口；公网 HTTPS/WSS 由外部反向代理终止，Agent Token 使用 Windows DPAPI 保护
-- **快捷键**：`Ctrl+Shift+R/L/P/S/M/Q/C/Y` 覆盖重启 / 日志 / 插件 / 设置 / Manager / 退出 / 连接 / 同步（Ctrl+Shift 组合避免与页面快捷键冲突）
+- **快捷键**：默认 `Ctrl+Shift+1–9` 对应重启 / 日志 / 插件 / 设置 / Manager / 退出 / 连接 / 同步 / 远端目录；可在设置中修改或禁用。`Ctrl+Shift+C` 留给终端复制。快捷键仅在对应 Launcher 窗口有焦点时生效。
 
 ## 类似项目对比
 
@@ -83,9 +83,9 @@
    - 认证：推荐密钥（点「生成密钥」→「复制公钥」粘贴到服务器 `~/.ssh/authorized_keys`），或直接填密码
    - 本地端口留 0（自动分配）
 3. **测试连接**：设置里「测试连接」→ 显示 SSH 正常 + 远端 dsh 版本
-4. **连接**：`Ctrl+Shift+C` 打开连接选择器 → 选择服务器 → 独立窗口打开远程 dsh
-5. **同步**：SSH 窗口按 `Ctrl+Shift+Y`，把本地配置（`settings.yaml` 等）与已装插件同步到服务器，完成后可选重启远端生效
-6. **打开远端文件夹**：SSH 窗口按 `Ctrl+Shift+O`（或直接点 dsh UI 的「工作区 +」按钮，会被自动拦截）→ 弹出服务器目录浏览器 → 选择目录即添加到远端 dsh 工作区 → 刷新后即可打开
+4. **连接**：`Ctrl+Shift+7` 打开连接选择器 → 选择服务器 → 独立窗口打开远程 dsh
+5. **同步**：SSH 窗口按 `Ctrl+Shift+8`，把本地配置（`settings.yaml` 等）与已装插件同步到服务器，完成后可选重启远端生效
+6. **打开远端文件夹**：SSH 窗口按 `Ctrl+Shift+9`（或直接点 dsh UI 的「工作区 +」按钮，会被自动拦截）→ 弹出服务器目录浏览器 → 选择目录即添加到远端 dsh 工作区 → 刷新后即可打开
 
 ### 4. dsh-manager 远程管理
 
@@ -100,7 +100,7 @@ Agent Token 配对成功后会由 Windows DPAPI 加密保存，不会以明文�
 
 #### 使用 Launcher 作为 dsh-manager 前端
 
-DshLauncher 可直接作为 dsh-manager 的轻量前端使用，无需另行打开或嵌入 Manager Dashboard。点击标题栏「Manager」、托盘菜单「dsh-manager」或按 `Ctrl+Shift+M`，输入 manager 地址、用户名和密码即可登录。
+DshLauncher 可直接作为 dsh-manager 的轻量前端使用，无需另行打开或嵌入 Manager Dashboard。点击标题栏「Manager」、托盘菜单「dsh-manager」或按 `Ctrl+Shift+5`，输入 manager 地址、用户名和密码即可登录。
 
 登录后可：
 
@@ -126,17 +126,19 @@ manager 登录会话使用 HttpOnly `dsh-session` Cookie，Launcher 只将 DPAPI
 
 ### 5. 快捷键
 
+以下为默认值，可在设置中修改或禁用；已保存的自定义设置不会被覆盖。数字组合也可能与页面或其他应用冲突，请按需调整。
+
 | 快捷键 | 功能 |
 |---|---|
-| `Ctrl+Shift+R` | 重启当前连接 |
-| `Ctrl+Shift+L` | 日志 |
-| `Ctrl+Shift+P` | 插件管理 |
-| `Ctrl+Shift+S` | 设置 |
-| `Ctrl+Shift+M` | dsh-manager 原生面板 |
-| `Ctrl+Shift+C` | 连接选择器（本地 + 各服务器） |
-| `Ctrl+Shift+Y` | 同步本地配置与插件到当前服务器 |
-| `Ctrl+Shift+O` | 打开远端文件夹（目录浏览器 → 添加到工作区） |
-| `Ctrl+Shift+Q` | 退出 |
+| `Ctrl+Shift+1` | 重启当前连接 |
+| `Ctrl+Shift+2` | 日志 |
+| `Ctrl+Shift+3` | 插件管理 |
+| `Ctrl+Shift+4` | 设置 |
+| `Ctrl+Shift+5` | dsh-manager 原生面板 |
+| `Ctrl+Shift+7` | 连接选择器（本地 + 各服务器） |
+| `Ctrl+Shift+8` | 同步本地配置与插件到当前服务器 |
+| `Ctrl+Shift+9` | 打开远端文件夹（目录浏览器 → 添加到工作区） |
+| `Ctrl+Shift+6` | 退出 |
 
 ## 构建
 
